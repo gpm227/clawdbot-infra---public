@@ -59,25 +59,12 @@ SEVERITY_MAP = {"high": "red", "medium": "yellow", "low": "yellow"}
 
 
 def get_db():
-    """Return a psycopg2 connection to Supabase Postgres."""
-    url = os.environ.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_SERVICE_KEY", "")
-    if not url or not key:
-        print("ERROR: SUPABASE_URL and SUPABASE_SERVICE_KEY must be set.", file=sys.stderr)
+    """Return a psycopg2 connection via DATABASE_URL."""
+    dsn = os.environ.get("DATABASE_URL", "")
+    if not dsn:
+        print("ERROR: DATABASE_URL must be set.", file=sys.stderr)
         sys.exit(1)
-
-    # Extract host from Supabase URL: https://xxx.supabase.co → db.xxx.supabase.co
-    project_ref = url.replace("https://", "").replace(".supabase.co", "")
-    host = f"db.{project_ref}.supabase.co"
-
-    return psycopg2.connect(
-        host=host,
-        port=5432,
-        dbname="postgres",
-        user="postgres",
-        password=key,
-        sslmode="require",
-    )
+    return psycopg2.connect(dsn)
 
 
 # ---------------------------------------------------------------------------
