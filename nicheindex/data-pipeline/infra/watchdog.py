@@ -5,10 +5,10 @@ Thin orchestrator: resolve → detect → dedup-insert → escalate.
 All detection logic lives in detectors.sql. This file only wires it up.
 
 Environment variables:
-  SUPABASE_URL         - Supabase project URL
-  SUPABASE_SERVICE_KEY - Service role key
-  RESEND_API_KEY       - For RED alert emails
-  WATCHDOG_EMAIL_TO    - Recipient email for RED alerts
+  DATABASE_URL          - Postgres connection string (write access)
+  RESEND_API_KEY        - For RED alert emails
+  WATCHDOG_EMAIL_TO     - Recipient email for RED alerts
+  DISCORD_WEBHOOK_URL   - Discord webhook for all alerts (primary channel)
 """
 
 import os
@@ -23,12 +23,12 @@ import psycopg2.extras
 # ---------------------------------------------------------------------------
 JOB_REGISTRY = {
     "rss-pulse": {
-        "lookback_hours": 13,
-        "max_per_window": 1,
+        "lookback_hours": 25,    # runs twice daily ~12h apart; 25h covers max gap
+        "max_per_window": 2,     # runs AM + PM = 2 completions per 25h window
         "severity": "high",
     },
     "daily-census": {
-        "lookback_hours": 6,
+        "lookback_hours": 26,    # can start late; run takes ~47min; 26h = safe buffer
         "max_per_window": 1,
         "severity": "high",
         "window": ("20:00", "21:00"),
@@ -48,9 +48,29 @@ JOB_REGISTRY = {
         "max_per_window": 1,
         "severity": "medium",
     },
+    "niche-trends": {
+        "lookback_hours": 26,
+        "max_per_window": 1,
+        "severity": "medium",
+    },
     "sponsor-collector": {
         "lookback_hours": 48,
         "max_per_window": 2,
+        "severity": "low",
+    },
+    "archive-crawl": {
+        "lookback_hours": 48,
+        "max_per_window": 1,
+        "severity": "low",
+    },
+    "bulk-archive-crawl": {
+        "lookback_hours": 72,
+        "max_per_window": 1,
+        "severity": "low",
+    },
+    "search-crawl": {
+        "lookback_hours": 48,
+        "max_per_window": 1,
         "severity": "low",
     },
 }
@@ -269,10 +289,43 @@ def dedup_insert_alert(conn, alert: dict[str, Any]) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Email escalation (step 4)
+# Discord notification (step 4a — primary, all alerts)
+# ---------------------------------------------------------------------------
+def send_discord_alert(alert: dict[str, Any]):
+    """Post alert to Discord via webhook. Primary notification channel."""
+    import urllib.request
+    import json as _json
+
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+    if not webhook_url:
+        print("WARNING: DISCORD_WEBHOOK_URL not set. Skipping Discord.", file=sys.stderr)
+        return
+
+    severity = alert["severity"].upper()
+    color = 0xEF4444 if severity == "RED" else 0xF59E0B  # red / amber
+    job = alert.get("job_name") or "unknown"
+
+    payload = {
+        "embeds": [{
+            "title": f"[{severity}] {alert['alert_type']} — {job}",
+            "description": alert.get("message", ""),
+            "color": color,
+        }]
+    }
+    try:
+        data = _json.dumps(payload).encode()
+        req = urllib.request.Request(webhook_url, data=data,
+                                     headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as exc:
+        print(f"WARNING: Discord webhook failed: {exc}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Email escalation (step 4b — RED only, backup)
 # ---------------------------------------------------------------------------
 def send_email_alert(alert: dict[str, Any]):
-    """Send RED alert via Resend."""
+    """Send RED alert via Resend (backup escalation)."""
     try:
         import resend
     except ImportError:
@@ -308,24 +361,30 @@ def run_watchdog():
     # Step 2: detect anomalies
     alerts = run_all_detectors(conn)
 
-    # Step 3: dedup insert + collect new REDs
+    # Step 3: dedup insert + collect newly-inserted alerts by severity
+    new_alerts = []
     new_red = []
     for alert in alerts:
         inserted = dedup_insert_alert(conn, alert)
-        if inserted and alert["severity"] == "red":
-            new_red.append(alert)
+        if inserted:
+            new_alerts.append(alert)
+            if alert["severity"] == "red":
+                new_red.append(alert)
 
-    # Step 4: escalate REDs via email
+    # Step 4a: Discord for all new alerts (primary)
+    for alert in new_alerts:
+        send_discord_alert(alert)
+
+    # Step 4b: email for RED only (backup escalation)
     for alert in new_red:
         send_email_alert(alert)
 
     # Summary
-    total_new = sum(1 for a in alerts if dedup_insert_alert(conn, a) is False or True)
     open_count_cur = conn.cursor()
     open_count_cur.execute("SELECT count(*) FROM bot_alerts WHERE resolved = false")
     open_count = open_count_cur.fetchone()[0]
 
-    print(f"Watchdog run complete. Detected: {len(alerts)}. New REDs emailed: {len(new_red)}. Open alerts: {open_count}.")
+    print(f"Watchdog run complete. Detected: {len(alerts)}. New alerts: {len(new_alerts)} ({len(new_red)} RED). Open alerts: {open_count}.")
     conn.close()
 
 
