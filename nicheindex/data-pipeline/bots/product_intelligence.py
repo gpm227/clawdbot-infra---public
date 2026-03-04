@@ -335,31 +335,52 @@ def compute_scorecard(cur) -> dict:
     cur.execute("SELECT count(*) AS n FROM inbound_emails WHERE created_at >= now() - interval '7 days'")
     scorecard["inbox_volume_7d"] = cur.fetchone()["n"]
 
-    # === INTELLIGENCE QUALITY (Substack engagement + growth) ===
+    # === AUDIENCE (who's in the database and how they're growing) ===
 
-    # Median engagement across active pubs (likes per post)
+    # Category distribution — top 5 by total subscribers
     cur.execute("""
-        SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY pa.like_count) AS median_likes,
-               avg(pa.like_count) AS avg_likes
-        FROM publication_activity pa
-        JOIN publications p ON p.id = pa.publication_id
-        WHERE p.is_inactive != true AND pa.like_count > 0
+        SELECT category_name, total_publications, total_free_subscribers,
+               avg_growth_7d, avg_growth_30d
+        FROM niche_scores
+        ORDER BY total_free_subscribers DESC NULLS LAST
+        LIMIT 5
     """)
-    eng = cur.fetchone()
-    scorecard["median_engagement"] = round(float(eng["median_likes"] or 0), 1)
-    scorecard["avg_engagement"] = round(float(eng["avg_likes"] or 0), 1)
+    scorecard["top_categories"] = [dict(r) for r in cur.fetchall()]
 
-    # 7-day subscriber growth across all active pubs
+    # Aggregate growth signal
     cur.execute("""
         SELECT sum(subscriber_growth_7d_abs) AS total_growth,
-               avg(subscriber_growth_7d_pct) AS avg_growth_pct
+               count(*) FILTER (WHERE subscriber_growth_7d_pct > 0) AS growing,
+               count(*) FILTER (WHERE subscriber_growth_7d_pct < 0) AS shrinking
         FROM niche_trends
         WHERE computed_at >= now() - interval '8 days'
         AND subscriber_growth_7d_abs IS NOT NULL
     """)
     growth = cur.fetchone()
     scorecard["total_sub_growth_7d"] = int(growth["total_growth"] or 0)
-    scorecard["avg_sub_growth_pct_7d"] = round(float(growth["avg_growth_pct"] or 0), 2)
+    scorecard["categories_growing"] = growth["growing"]
+    scorecard["categories_shrinking"] = growth["shrinking"]
+
+    # === CONTENT (what's being published and how it performs) ===
+
+    # Engagement + posting velocity across active pubs
+    cur.execute("""
+        SELECT
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY pa.avg_engagement) AS median_engagement,
+            avg(pa.avg_engagement) AS avg_engagement,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY pa.posts_30d) AS median_posts_30d,
+            avg(pa.posts_30d) AS avg_posts_30d,
+            count(*) FILTER (WHERE pa.has_podcast = true) AS podcast_pubs
+        FROM publication_activity pa
+        JOIN publications p ON p.id = pa.publication_id
+        WHERE p.is_inactive != true AND pa.avg_engagement > 0
+    """)
+    content = cur.fetchone()
+    scorecard["median_engagement"] = round(float(content["median_engagement"] or 0), 1)
+    scorecard["avg_engagement"] = round(float(content["avg_engagement"] or 0), 1)
+    scorecard["median_posts_30d"] = round(float(content["median_posts_30d"] or 0), 1)
+    scorecard["avg_posts_30d"] = round(float(content["avg_posts_30d"] or 0), 1)
+    scorecard["podcast_pubs"] = content["podcast_pubs"]
 
     # === INFRASTRUCTURE ===
 
@@ -437,17 +458,15 @@ SCORECARD:
 RED ALERTS:
 {red_text}
 
-WHAT MATTERS (flywheel health, not vanity metrics):
-- Active subscriptions: growing toward 500+ (more subs = more inbox data = better intelligence)
-- Inbox volume: growing toward 500+ emails/week (the raw fuel for content scoring)
-- Queue depth: pending > 200 means flywheel is fed; < 50 means discovery bot needs to run
-- Pipeline success rate: >95%
-- Non-Substack pubs: growing (Substack is the base; net-new platforms are the moat)
-- Active pub count is context, NOT a target — 16K Substack pubs is a nice base, not a goal
+WHAT MATTERS:
+1. FLYWHEEL: Are subscriptions and inbox volume growing? Queue depth healthy? (more subs = more inbox data = better intelligence)
+2. AUDIENCE: What's the composition? Which niches are growing/shrinking? Where are the biggest audiences?
+3. CONTENT: How active are publishers? What engagement levels? What's the posting velocity?
+4. Active pub count (16K) is a Substack base — context, NOT a target. Real value = net-new email subs + content signals.
 
 Write exactly 3-5 bullets:
-1. Flywheel health: are subscriptions and inbox volume growing? (cite numbers)
-2. Where are we lagging vs winning? (be specific — name the metric and gap)
+1. Flywheel health: subscriptions, inbox volume, queue (cite numbers)
+2. Audience + content: what types of audiences and content do we have? What's strong, what's thin?
 3-5. Specific Y/N action items for the bot army. Each must be concrete and actionable.
    Format: "Y/N: [action] — [one sentence reason]"
    Examples: "Y: Enable inbox-scorer — 84 unscored emails waiting, content quality dimension blocked"
@@ -552,10 +571,18 @@ def format_discord_report(signals: list[dict], scorecard: dict,
     lines.append(f"  Subscriptions: {scorecard.get('active_subscriptions', '?')} active")
     lines.append(f"  Inbox: {scorecard.get('inbox_volume_7d', '?')} emails this week")
     lines.append("")
-    lines.append("**INTELLIGENCE**")
-    lines.append(f"  Engagement: {scorecard.get('median_engagement', '?')} median / {scorecard.get('avg_engagement', '?')} avg likes per post")
-    lines.append(f"  Growth (7d): {scorecard.get('total_sub_growth_7d', '?'):,} total subs gained, {scorecard.get('avg_sub_growth_pct_7d', '?')}% avg")
-    lines.append(f"  Pubs: {scorecard.get('active_pubs', '?'):,} active | Pipeline: {scorecard.get('pipeline_success_pct', '?')}% ({scorecard.get('pipeline_runs_24h', '?')} runs)")
+    lines.append("**AUDIENCE**")
+    lines.append(f"  Growth (7d): {scorecard.get('total_sub_growth_7d', '?'):,} net subs | {scorecard.get('categories_growing', '?')} niches growing, {scorecard.get('categories_shrinking', '?')} shrinking")
+    top_cats = scorecard.get("top_categories", [])
+    if top_cats:
+        cat_parts = [f"{c['category_name']} ({c['total_free_subscribers']:,} subs)" for c in top_cats[:3]]
+        lines.append(f"  Top niches: {' · '.join(cat_parts)}")
+    lines.append(f"  {scorecard.get('active_pubs', '?'):,} active pubs")
+    lines.append("")
+    lines.append("**CONTENT**")
+    lines.append(f"  Engagement: {scorecard.get('median_engagement', '?')} median / {scorecard.get('avg_engagement', '?')} avg per post")
+    lines.append(f"  Velocity: {scorecard.get('median_posts_30d', '?')} median / {scorecard.get('avg_posts_30d', '?')} avg posts/30d | {scorecard.get('podcast_pubs', '?')} podcast pubs")
+    lines.append(f"  Pipeline: {scorecard.get('pipeline_success_pct', '?')}% ({scorecard.get('pipeline_runs_24h', '?')} runs)")
     lines.append("")
 
     # Signals
