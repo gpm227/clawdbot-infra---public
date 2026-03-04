@@ -1,0 +1,72 @@
+/Library/Developer/CommandLineTools/usr/bin/python3: can't open file '/Users/gregmessinger/Downloads/clawdbot-infra/nicheindex/data-pipeline/infra/watchdog.py': [Errno 1] Operation not permitted
+Watchdog run complete. Detected: 6. New REDs emailed: 0. Open alerts: 6.
+Watchdog run complete. Detected: 6. New REDs emailed: 0. Open alerts: 6.
+Watchdog run complete. Detected: 6. New REDs emailed: 0. Open alerts: 6.
+Watchdog run complete. Detected: 6. New REDs emailed: 0. Open alerts: 6.
+Watchdog run complete. Detected: 6. New REDs emailed: 0. Open alerts: 6.
+Watchdog run complete. Detected: 6. New REDs emailed: 0. Open alerts: 6.
+/Users/gregmessinger/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+Watchdog run complete. Detected: 6. New REDs emailed: 1. Open alerts: 6.
+Watchdog run complete. Detected: 6. New REDs emailed: 0. Open alerts: 6.
+Watchdog run complete. Detected: 6. New REDs emailed: 0. Open alerts: 6.
+Watchdog run complete. Detected: 6. New REDs emailed: 0. Open alerts: 6.
+Watchdog run complete. Detected: 6. New REDs emailed: 0. Open alerts: 6.
+Watchdog run complete. Detected: 6. New REDs emailed: 0. Open alerts: 6.
+Watchdog run complete. Detected: 6. New REDs emailed: 0. Open alerts: 6.
+Watchdog run complete. Detected: 6. New REDs emailed: 0. Open alerts: 6.
+Watchdog run complete. Detected: 6. New REDs emailed: 0. Open alerts: 6.
+Watchdog run complete. Detected: 6. New REDs emailed: 0. Open alerts: 6.
+WARNING: DISCORD_WEBHOOK_URL not set. Skipping Discord.
+WARNING: DISCORD_WEBHOOK_URL not set. Skipping Discord.
+WARNING: DISCORD_WEBHOOK_URL not set. Skipping Discord.
+WARNING: DISCORD_WEBHOOK_URL not set. Skipping Discord.
+Watchdog run complete. Detected: 9. New alerts: 4 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 9. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 9. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 9. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 9. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 9. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 9. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 9. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 9. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 9. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 9. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 9. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 9. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 9. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 8. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 8. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 8. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 8. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 8. New alerts: 0 (0 RED). Open alerts: 9.
+Watchdog run complete. Detected: 8. New alerts: 0 (0 RED). Open alerts: 9.
+WARNING: DISCORD_WEBHOOK_URL not set. Skipping Discord.
+Watchdog run complete. Detected: 8. New alerts: 1 (0 RED). Open alerts: 9.
+WARNING: DISCORD_WEBHOOK_URL not set. Skipping Discord.
+WARNING: DISCORD_WEBHOOK_URL not set. Skipping Discord.
+Watchdog run complete. Detected: 10. New alerts: 2 (0 RED). Open alerts: 11.
+WARNING: DISCORD_WEBHOOK_URL not set. Skipping Discord.
+WARNING: DISCORD_WEBHOOK_URL not set. Skipping Discord.
+Watchdog run complete. Detected: 12. New alerts: 2 (0 RED). Open alerts: 13.
+Watchdog run complete. Detected: 12. New alerts: 0 (0 RED). Open alerts: 13.
+Watchdog run complete. Detected: 12. New alerts: 0 (0 RED). Open alerts: 13.
+Watchdog run complete. Detected: 12. New alerts: 0 (0 RED). Open alerts: 13.
+Traceback (most recent call last):
+  File "/Users/gregmessinger/clawdbot-infra/nicheindex/data-pipeline/infra/watchdog.py", line 407, in <module>
+    run_watchdog()
+  File "/Users/gregmessinger/clawdbot-infra/nicheindex/data-pipeline/infra/watchdog.py", line 371, in run_watchdog
+    conn = get_db()
+  File "/Users/gregmessinger/clawdbot-infra/nicheindex/data-pipeline/infra/watchdog.py", line 102, in get_db
+    return psycopg2.connect(dsn)
+  File "/Users/gregmessinger/Library/Python/3.9/lib/python/site-packages/psycopg2/__init__.py", line 122, in connect
+    conn = _connect(dsn, connection_factory=connection_factory, **kwasync)
+psycopg2.OperationalError: could not translate host name "aws-1-us-east-2.pooler.supabase.com" to address: nodename nor servname provided, or not known
+
+WARNING: DISCORD_WEBHOOK_URL not set. Skipping Discord.
+WARNING: DISCORD_WEBHOOK_URL not set. Skipping Discord.
+/Users/gregmessinger/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+Watchdog run complete. Detected: 10. New alerts: 2 (1 RED). Open alerts: 15.
+Watchdog run complete. Detected: 10. New alerts: 0 (0 RED). Open alerts: 15.
+Watchdog run complete. Detected: 10. New alerts: 0 (0 RED). Open alerts: 15.

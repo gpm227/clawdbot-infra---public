@@ -22,6 +22,8 @@ what pipeline scripts write to `pipeline_runs.job_name`.
 | publication-intake     | 48             | 2              | low      |              |            | Runs after sponsor-collector; idempotent |
 | auto-rater             | 26             | 1              | medium   |              |            | Runs post-census; scores all active pubs |
 | media-kit-collector    | 168            | 1              | low      |              |            | Weekly; collects media kits post-subscribe |
+| data-qa                | 26             | 1              | medium   |              |            | Daily post-census reconciliation; receipt vs reality checks |
+| pipeline-digest        | 168            | 1              | low      |              |            | Weekly Monday 9am; pipeline health summary |
 
 ## Jobs NOT yet monitored
 

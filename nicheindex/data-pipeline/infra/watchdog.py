@@ -88,6 +88,16 @@ JOB_REGISTRY = {
         "max_per_window": 1,
         "severity": "low",
     },
+    "data-qa": {
+        "lookback_hours": 26,    # daily post-census reconciliation
+        "max_per_window": 1,
+        "severity": "medium",
+    },
+    "pipeline-digest": {
+        "lookback_hours": 168,   # weekly Monday 9am
+        "max_per_window": 1,
+        "severity": "low",
+    },
 }
 
 SEVERITY_MAP = {"high": "red", "medium": "yellow", "low": "yellow"}
@@ -246,25 +256,28 @@ def run_all_detectors(conn) -> list[dict[str, Any]]:
         """, (job_name, job_name, job_name, job_name))
         alerts.extend(cur.fetchall())
 
-        # 7. Stuck running job
+        # 7. Stuck running job — checkpoint-aware
+        #    If last_checkpoint_at exists and is >30min old → stuck (no progress)
+        #    If last_checkpoint_at is NULL and running >2h → stuck (old-style)
+        #    If last_checkpoint_at is recent → busy, skip
         cur.execute("""
             SELECT 'stuck_job' AS alert_type, %s AS job_name, 'red' AS severity,
-                   format('%%s has been running for %%s hours.',
-                          %s, round(EXTRACT(EPOCH FROM (now() - p.started_at)) / 3600.0, 1)) AS message
+                   format('%%s has been running for %%s hours with no checkpoint progress for %%s min.',
+                          %s,
+                          round(EXTRACT(EPOCH FROM (now() - p.started_at)) / 3600.0, 1),
+                          round(EXTRACT(EPOCH FROM (now() - coalesce(p.last_checkpoint_at, p.started_at))) / 60.0, 0)
+                   ) AS message,
+                   p.id AS run_id
             FROM pipeline_runs p
-            CROSS JOIN (
-                SELECT coalesce(
-                    percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_seconds) * 3, 3600
-                ) AS threshold_sec
-                FROM (
-                    SELECT duration_seconds FROM pipeline_runs
-                    WHERE job_name = %s AND status = 'completed' AND duration_seconds IS NOT NULL
-                    ORDER BY completed_at DESC LIMIT 10
-                ) hist
-            ) baseline
             WHERE p.job_name = %s AND p.status = 'running'
-            AND EXTRACT(EPOCH FROM (now() - p.started_at)) > greatest(baseline.threshold_sec, 3600)
-        """, (job_name, job_name, job_name, job_name))
+            AND (
+                (p.last_checkpoint_at IS NOT NULL
+                 AND EXTRACT(EPOCH FROM (now() - p.last_checkpoint_at)) > 1800)
+                OR
+                (p.last_checkpoint_at IS NULL
+                 AND EXTRACT(EPOCH FROM (now() - p.started_at)) > 7200)
+            )
+        """, (job_name, job_name, job_name))
         alerts.extend(cur.fetchall())
 
     # 4. Unknown job names (runs once, not per-job)
@@ -365,6 +378,47 @@ def send_email_alert(alert: dict[str, Any]):
 
 
 # ---------------------------------------------------------------------------
+# Auto-remediation (step 5) — fix stuck jobs automatically
+# ---------------------------------------------------------------------------
+def auto_remediate_stuck(conn, alert: dict[str, Any]):
+    """Mark a stuck job as failed so the next scheduled run can retry."""
+    run_id = alert.get("run_id")
+    if not run_id:
+        return
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE pipeline_runs
+        SET status = 'failed',
+            completed_at = now(),
+            error_text = 'Auto-remediated by watchdog: no checkpoint progress for 30+ min'
+        WHERE id = %s AND status = 'running'
+    """, (run_id,))
+    conn.commit()
+    if cur.rowcount > 0:
+        print(f"  Auto-remediated stuck run {run_id} for {alert.get('job_name')}")
+
+
+def log_bot_interaction(conn, bot_name: str, interaction_type: str,
+                        observation: dict, proposed_action: str = None,
+                        decision: str = None, outcome: dict = None):
+    """Log a structured bot interaction for training data."""
+    import json as _json
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO bot_interactions (bot_name, interaction_type, observation,
+                                          proposed_action, decision, outcome)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (bot_name, interaction_type,
+              _json.dumps(observation), proposed_action, decision,
+              _json.dumps(outcome) if outcome else None))
+        conn.commit()
+    except Exception as exc:
+        print(f"WARNING: Failed to log bot interaction: {exc}", file=sys.stderr)
+        conn.rollback()
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 def run_watchdog():
@@ -393,6 +447,39 @@ def run_watchdog():
     # Step 4b: email for RED only (backup escalation)
     for alert in new_red:
         send_email_alert(alert)
+
+    # Step 5: Auto-remediate stuck jobs
+    for alert in new_alerts:
+        if alert["alert_type"] == "stuck_job":
+            auto_remediate_stuck(conn, alert)
+            log_bot_interaction(
+                conn,
+                bot_name="watchdog",
+                interaction_type="remediation",
+                observation={
+                    "alert_type": "stuck_job",
+                    "job_name": alert.get("job_name"),
+                    "message": alert.get("message"),
+                },
+                proposed_action="Mark stuck run as failed for next-cycle retry",
+                decision="auto-executed",
+                outcome={"action": "marked_failed", "run_id": str(alert.get("run_id", ""))},
+            )
+
+    # Log all non-stuck alerts as observations (training data)
+    for alert in new_alerts:
+        if alert["alert_type"] != "stuck_job":
+            log_bot_interaction(
+                conn,
+                bot_name="watchdog",
+                interaction_type="observation",
+                observation={
+                    "alert_type": alert["alert_type"],
+                    "job_name": alert.get("job_name"),
+                    "severity": alert["severity"],
+                    "message": alert.get("message"),
+                },
+            )
 
     # Summary
     open_count_cur = conn.cursor()

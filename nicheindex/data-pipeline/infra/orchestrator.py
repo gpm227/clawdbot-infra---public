@@ -9,10 +9,11 @@ Schedule:
   20:00 MST → daily-census (then chains post-census sequence)
 
 Post-census sequence (starts when census completes):
-  niche-trends → publication-intake → growth-delta → inactive-detector → new-entrant-detector → auto-rater
+  niche-trends → publication-intake → growth-delta → inactive-detector → new-entrant-detector → auto-rater → data-qa
 
-Weekly (Sunday):
-  18:00 MST → media-kit-collector
+Weekly:
+  Sunday 18:00 MST → media-kit-collector
+  Monday 09:00 MST → pipeline-digest
 
 Each job runs as a subprocess. On failure: retries once after 5 min.
 Second failure: lets watchdog handle it (it will fire failed_job RED alert).
@@ -30,6 +31,8 @@ import psycopg2
 DENVER = ZoneInfo("America/Denver")
 PIPELINE_DIR = Path(__file__).parent.parent.parent.parent / "nicheindex" / "pipeline"
 
+BOTS_DIR = Path(__file__).parent.parent / "bots"
+
 SCRIPTS = {
     "rss-pulse":            PIPELINE_DIR / "rss_pulse.py",
     "daily-census":         PIPELINE_DIR / "crawl.py",
@@ -39,6 +42,8 @@ SCRIPTS = {
     "new-entrant-detector": PIPELINE_DIR / "new_entrant_detector.py",
     "publication-intake":   PIPELINE_DIR / "publication_intake.py",
     "auto-rater":           PIPELINE_DIR / "auto_rater.py",
+    "data-qa":              BOTS_DIR / "data_qa.py",
+    "pipeline-digest":      BOTS_DIR / "pipeline_digest.py",
 }
 
 
@@ -97,7 +102,7 @@ def wait_for_census_completion(timeout_min: int = 90) -> bool:
 
 def run_post_census_sequence():
     """Chain: niche-trends → growth-delta → inactive-detector → new-entrant-detector"""
-    for job_name in ["niche-trends", "publication-intake", "growth-delta", "inactive-detector", "new-entrant-detector", "auto-rater"]:
+    for job_name in ["niche-trends", "publication-intake", "growth-delta", "inactive-detector", "new-entrant-detector", "auto-rater", "data-qa"]:
         run_with_retry(job_name)
         time.sleep(5)  # brief pause between jobs
 
@@ -125,6 +130,10 @@ def main():
     # Uncomment when media_kit_collector.py is built:
     # scheduler.add_job(lambda: run_with_retry("media-kit-collector"),
     #                   CronTrigger(day_of_week='sun', hour=18, minute=0))
+
+    # pipeline-digest: Monday 9am MST (weekly summary)
+    scheduler.add_job(lambda: run_with_retry("pipeline-digest"),
+                      CronTrigger(day_of_week='mon', hour=9, minute=0))
 
     print(f"[orchestrator] Scheduler running. Denver time: {datetime.now(DENVER).strftime('%H:%M %Z')}")
     scheduler.start()
