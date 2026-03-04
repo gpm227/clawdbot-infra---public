@@ -1,0 +1,240 @@
+# jobs.yaml — Single source of truth for all NicheIndex pipeline jobs
+# Replaces hardcoded JOB_REGISTRY (watchdog.py) and SCRIPTS (orchestrator.py)
+#
+# This file is product-specific. Swap it + DATABASE_URL to monitor a different product.
+
+project: nicheindex
+timezone: America/Denver
+
+# Relative paths from this file's directory
+pipeline_dir: ../../../nicheindex/pipeline
+bots_dir: ../bots
+
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
+# Fields:
+#   script        — filename of the Python script
+#   location      — "pipeline" (pipeline_dir) or "bots" (bots_dir)
+#   schedule      — list of cron triggers (APScheduler CronTrigger kwargs)
+#   chain_after   — run after this job completes (instead of / in addition to cron)
+#   chain_order   — position in chain sequence (lower = runs first)
+#   monitoring    — watchdog detection config
+#     lookback_hours  — how far back to check for completed runs
+#     max_per_window  — max expected completions in lookback window
+#     severity        — high | medium | low
+#     window          — [start, end] Denver time; triggers outside_window alert
+#   enabled       — false to skip scheduling (script not yet built)
+
+jobs:
+
+  # -----------------------------------------------------------------------
+  # HIGH PRIORITY — core data freshness
+  # -----------------------------------------------------------------------
+
+  rss-pulse:
+    script: rss_pulse.py
+    location: pipeline
+    schedule:
+      - { hour: 8, minute: 0 }
+      - { hour: 19, minute: 30 }
+    monitoring:
+      lookback_hours: 25
+      max_per_window: 2
+      severity: high
+    enabled: true
+
+  daily-census:
+    script: crawl.py
+    location: pipeline
+    schedule:
+      - { hour: 20, minute: 0 }
+    monitoring:
+      lookback_hours: 26
+      max_per_window: 1
+      severity: high
+      window: ["20:00", "21:00"]
+    enabled: true
+
+  # -----------------------------------------------------------------------
+  # MEDIUM PRIORITY — post-census chain
+  # Runs sequentially after daily-census completes, in chain_order
+  # -----------------------------------------------------------------------
+
+  niche-trends:
+    script: deltas.py
+    location: pipeline
+    chain_after: daily-census
+    chain_order: 1
+    monitoring:
+      lookback_hours: 26
+      max_per_window: 1
+      severity: medium
+    enabled: true
+
+  publication-intake:
+    script: publication_intake.py
+    location: pipeline
+    chain_after: daily-census
+    chain_order: 2
+    monitoring:
+      lookback_hours: 48
+      max_per_window: 2
+      severity: low
+    enabled: true
+
+  growth-delta:
+    script: growth_delta.py
+    location: pipeline
+    chain_after: daily-census
+    chain_order: 3
+    monitoring:
+      lookback_hours: 26
+      max_per_window: 1
+      severity: medium
+    enabled: true
+
+  inactive-detector:
+    script: inactive_detector.py
+    location: pipeline
+    chain_after: daily-census
+    chain_order: 4
+    monitoring:
+      lookback_hours: 26
+      max_per_window: 1
+      severity: medium
+    enabled: true
+
+  new-entrant-detector:
+    script: new_entrant_detector.py
+    location: pipeline
+    chain_after: daily-census
+    chain_order: 5
+    monitoring:
+      lookback_hours: 26
+      max_per_window: 1
+      severity: medium
+    enabled: true
+
+  auto-rater:
+    script: auto_rater.py
+    location: pipeline
+    chain_after: daily-census
+    chain_order: 6
+    monitoring:
+      lookback_hours: 26
+      max_per_window: 1
+      severity: medium
+    enabled: true
+
+  data-qa:
+    script: data_qa.py
+    location: bots
+    chain_after: daily-census
+    chain_order: 7
+    monitoring:
+      lookback_hours: 26
+      max_per_window: 1
+      severity: medium
+    enabled: true
+
+  # -----------------------------------------------------------------------
+  # LOW PRIORITY — archive crawls and discovery
+  # -----------------------------------------------------------------------
+
+  archive-crawl:
+    script: crawl_archives.py
+    location: pipeline
+    schedule:
+      - { day_of_week: "tue,fri", hour: 2, minute: 0 }
+    monitoring:
+      lookback_hours: 48
+      max_per_window: 1
+      severity: low
+    enabled: true
+
+  bulk-archive-crawl:
+    script: bulk_archive_crawl.py
+    location: pipeline
+    schedule:
+      - { day_of_week: "wed,sat", hour: 3, minute: 0 }
+    monitoring:
+      lookback_hours: 72
+      max_per_window: 1
+      severity: low
+    enabled: true
+
+  search-crawl:
+    script: search_crawl.py
+    location: pipeline
+    schedule:
+      - { day_of_week: "sun", hour: 4, minute: 0 }
+    monitoring:
+      lookback_hours: 48
+      max_per_window: 1
+      severity: low
+    enabled: true
+
+  sponsor-collector:
+    script: sponsor_collector.py
+    location: pipeline
+    schedule:
+      - { day_of_week: "mon,thu", hour: 10, minute: 0 }
+    monitoring:
+      lookback_hours: 48
+      max_per_window: 2
+      severity: low
+    enabled: true
+
+  # -----------------------------------------------------------------------
+  # WEEKLY
+  # -----------------------------------------------------------------------
+
+  pipeline-digest:
+    script: pipeline_digest.py
+    location: bots
+    schedule:
+      - { day_of_week: "mon", hour: 9, minute: 0 }
+    monitoring:
+      lookback_hours: 168
+      max_per_window: 1
+      severity: low
+    enabled: true
+
+  media-kit-collector:
+    script: media_kit_collector.py
+    location: bots
+    schedule:
+      - { day_of_week: "sun", hour: 18, minute: 0 }
+    monitoring:
+      lookback_hours: 168
+      max_per_window: 1
+      severity: low
+    enabled: false   # SOUL file exists, runner script not yet built
+
+  # -----------------------------------------------------------------------
+  # FUTURE — not yet built
+  # -----------------------------------------------------------------------
+
+  inbox-scorer:
+    script: inbox_scorer.py
+    location: bots
+    schedule:
+      - { hour: 9, minute: 0 }
+      - { hour: 21, minute: 0 }
+    monitoring:
+      lookback_hours: 25
+      max_per_window: 2
+      severity: medium
+    enabled: false   # blocked on alias system
+
+  monitor-subscriptions:
+    script: monitor_subscriptions.py
+    location: pipeline
+    schedule:
+      - { hour: "*/4", minute: 0 }
+    monitoring:
+      lookback_hours: 8
+      max_per_window: 6
+      severity: low
+    enabled: false   # blocked on alias system
