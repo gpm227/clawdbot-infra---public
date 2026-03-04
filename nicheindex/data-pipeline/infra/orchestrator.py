@@ -9,7 +9,10 @@ Schedule:
   20:00 MST → daily-census (then chains post-census sequence)
 
 Post-census sequence (starts when census completes):
-  niche-trends → growth-delta → inactive-detector → new-entrant-detector
+  niche-trends → publication-intake → growth-delta → inactive-detector → new-entrant-detector → auto-rater
+
+Weekly (Sunday):
+  18:00 MST → media-kit-collector
 
 Each job runs as a subprocess. On failure: retries once after 5 min.
 Second failure: lets watchdog handle it (it will fire failed_job RED alert).
@@ -34,6 +37,8 @@ SCRIPTS = {
     "growth-delta":         PIPELINE_DIR / "growth_delta.py",
     "inactive-detector":    PIPELINE_DIR / "inactive_detector.py",
     "new-entrant-detector": PIPELINE_DIR / "new_entrant_detector.py",
+    "publication-intake":   PIPELINE_DIR / "publication_intake.py",
+    "auto-rater":           PIPELINE_DIR / "auto_rater.py",
 }
 
 
@@ -92,7 +97,7 @@ def wait_for_census_completion(timeout_min: int = 90) -> bool:
 
 def run_post_census_sequence():
     """Chain: niche-trends → growth-delta → inactive-detector → new-entrant-detector"""
-    for job_name in ["niche-trends", "growth-delta", "inactive-detector", "new-entrant-detector"]:
+    for job_name in ["niche-trends", "publication-intake", "growth-delta", "inactive-detector", "new-entrant-detector", "auto-rater"]:
         run_with_retry(job_name)
         time.sleep(5)  # brief pause between jobs
 
@@ -114,6 +119,12 @@ def main():
             run_post_census_sequence()
 
     scheduler.add_job(census_and_chain, CronTrigger(hour=20, minute=0))
+
+    # media-kit-collector: Sunday 6pm MST (weekly, before product-intelligence)
+    # NOTE: runner script does not exist yet — SOUL file is the spec
+    # Uncomment when media_kit_collector.py is built:
+    # scheduler.add_job(lambda: run_with_retry("media-kit-collector"),
+    #                   CronTrigger(day_of_week='sun', hour=18, minute=0))
 
     print(f"[orchestrator] Scheduler running. Denver time: {datetime.now(DENVER).strftime('%H:%M %Z')}")
     scheduler.start()

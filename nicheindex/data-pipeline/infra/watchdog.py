@@ -73,6 +73,21 @@ JOB_REGISTRY = {
         "max_per_window": 1,
         "severity": "low",
     },
+    "publication-intake": {
+        "lookback_hours": 48,
+        "max_per_window": 2,
+        "severity": "low",
+    },
+    "auto-rater": {
+        "lookback_hours": 26,
+        "max_per_window": 1,
+        "severity": "medium",
+    },
+    "media-kit-collector": {
+        "lookback_hours": 168,   # weekly
+        "max_per_window": 1,
+        "severity": "low",
+    },
 }
 
 SEVERITY_MAP = {"high": "red", "medium": "yellow", "low": "yellow"}

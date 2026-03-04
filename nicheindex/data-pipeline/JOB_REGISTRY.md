@@ -19,6 +19,9 @@ what pipeline scripts write to `pipeline_runs.job_name`.
 | archive-crawl          | 48             | 1              | low      |              |            | crawl_archives.py; twice-weekly rolling refresh |
 | bulk-archive-crawl     | 72             | 1              | low      |              |            | bulk_archive_crawl.py; overnight backfill; takes several hours |
 | search-crawl           | 48             | 1              | low      |              |            | search_crawl.py; weekly discovery crawl |
+| publication-intake     | 48             | 2              | low      |              |            | Runs after sponsor-collector; idempotent |
+| auto-rater             | 26             | 1              | medium   |              |            | Runs post-census; scores all active pubs |
+| media-kit-collector    | 168            | 1              | low      |              |            | Weekly; collects media kits post-subscribe |
 
 ## Jobs NOT yet monitored
 
