@@ -13,92 +13,36 @@ Environment variables:
 
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 import psycopg2
 import psycopg2.extras
+import yaml
 
 # ---------------------------------------------------------------------------
-# Job Registry — must mirror JOB_REGISTRY.md exactly
+# Job Registry — loaded from jobs.yaml (single source of truth)
 # ---------------------------------------------------------------------------
-JOB_REGISTRY = {
-    "rss-pulse": {
-        "lookback_hours": 25,    # runs twice daily ~12h apart; 25h covers max gap
-        "max_per_window": 2,     # runs AM + PM = 2 completions per 25h window
-        "severity": "high",
-    },
-    "daily-census": {
-        "lookback_hours": 26,    # can start late; run takes ~47min; 26h = safe buffer
-        "max_per_window": 1,
-        "severity": "high",
-        "window": ("20:00", "21:00"),
-    },
-    "growth-delta": {
-        "lookback_hours": 26,
-        "max_per_window": 1,
-        "severity": "medium",
-    },
-    "inactive-detector": {
-        "lookback_hours": 26,
-        "max_per_window": 1,
-        "severity": "medium",
-    },
-    "new-entrant-detector": {
-        "lookback_hours": 26,
-        "max_per_window": 1,
-        "severity": "medium",
-    },
-    "niche-trends": {
-        "lookback_hours": 26,
-        "max_per_window": 1,
-        "severity": "medium",
-    },
-    "sponsor-collector": {
-        "lookback_hours": 48,
-        "max_per_window": 2,
-        "severity": "low",
-    },
-    "archive-crawl": {
-        "lookback_hours": 48,
-        "max_per_window": 1,
-        "severity": "low",
-    },
-    "bulk-archive-crawl": {
-        "lookback_hours": 72,
-        "max_per_window": 1,
-        "severity": "low",
-    },
-    "search-crawl": {
-        "lookback_hours": 48,
-        "max_per_window": 1,
-        "severity": "low",
-    },
-    "publication-intake": {
-        "lookback_hours": 48,
-        "max_per_window": 2,
-        "severity": "low",
-    },
-    "auto-rater": {
-        "lookback_hours": 26,
-        "max_per_window": 1,
-        "severity": "medium",
-    },
-    "media-kit-collector": {
-        "lookback_hours": 168,   # weekly
-        "max_per_window": 1,
-        "severity": "low",
-    },
-    "data-qa": {
-        "lookback_hours": 26,    # daily post-census reconciliation
-        "max_per_window": 1,
-        "severity": "medium",
-    },
-    "pipeline-digest": {
-        "lookback_hours": 168,   # weekly Monday 9am
-        "max_per_window": 1,
-        "severity": "low",
-    },
-}
+CONFIG_PATH = Path(__file__).parent.parent / "jobs.yaml"
+
+
+def load_job_registry() -> dict:
+    """Load monitoring config from jobs.yaml and return a watchdog registry dict."""
+    with open(CONFIG_PATH) as f:
+        config = yaml.safe_load(f)
+    registry = {}
+    for name, job in config.get("jobs", {}).items():
+        mon = job.get("monitoring", {})
+        if not mon:
+            continue
+        registry[name] = {
+            "lookback_hours": mon.get("lookback_hours", 26),
+            "max_per_window": mon.get("max_per_window", 1),
+            "severity": mon.get("severity", "medium"),
+        }
+        if "window" in mon:
+            registry[name]["window"] = tuple(mon["window"])
+    return registry
 
 SEVERITY_MAP = {"high": "red", "medium": "yellow", "low": "yellow"}
 
@@ -115,10 +59,10 @@ def get_db():
 # ---------------------------------------------------------------------------
 # Resolution (step 1) — run before detectors
 # ---------------------------------------------------------------------------
-def run_resolutions(conn):
+def run_resolutions(conn, job_registry: dict):
     """Auto-resolve alerts that are no longer valid."""
     cur = conn.cursor()
-    for job_name, config in JOB_REGISTRY.items():
+    for job_name, config in job_registry.items():
         lookback = config["lookback_hours"]
 
         # Resolve missing_job
@@ -164,13 +108,13 @@ def run_resolutions(conn):
 # ---------------------------------------------------------------------------
 # Detection (step 2) — run all 7 detectors
 # ---------------------------------------------------------------------------
-def run_all_detectors(conn) -> list[dict[str, Any]]:
+def run_all_detectors(conn, job_registry: dict) -> list[dict[str, Any]]:
     """Execute all detector queries and return a list of alerts."""
     alerts: list[dict[str, Any]] = []
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    registered_names = list(JOB_REGISTRY.keys())
+    registered_names = list(job_registry.keys())
 
-    for job_name, config in JOB_REGISTRY.items():
+    for job_name, config in job_registry.items():
         lookback = config["lookback_hours"]
         severity = SEVERITY_MAP.get(config["severity"], "yellow")
         max_pw = config["max_per_window"]
@@ -423,12 +367,13 @@ def log_bot_interaction(conn, bot_name: str, interaction_type: str,
 # ---------------------------------------------------------------------------
 def run_watchdog():
     conn = get_db()
+    job_registry = load_job_registry()
 
     # Step 1: auto-resolve cleared alerts
-    run_resolutions(conn)
+    run_resolutions(conn, job_registry)
 
     # Step 2: detect anomalies
-    alerts = run_all_detectors(conn)
+    alerts = run_all_detectors(conn, job_registry)
 
     # Step 3: dedup insert + collect newly-inserted alerts by severity
     new_alerts = []
