@@ -15,10 +15,17 @@ Watchdog and the bots are external observers.
 
 | File | Purpose |
 |------|---------|
-| `infra/watchdog.py` | 7-detector alert engine |
-| `infra/orchestrator.py` | APScheduler daemon (rss-pulse × 2, census + post-census chain) |
+| `infra/watchdog.py` | 7-detector alert engine + auto-remediation + bot_interactions logging |
+| `infra/orchestrator.py` | APScheduler daemon (rss-pulse × 2, census + post-census chain + data-qa, weekly digest) |
 | `infra/detectors.sql` | Raw detector queries |
 | `infra/resolve.sql` | Alert resolution queries |
+
+## Bot Runners (LIVE)
+
+| File | Status | Purpose |
+|------|--------|---------|
+| `bots/data_qa.py` | LIVE | Daily post-census reconciliation: receipt vs reality, coverage, freshness |
+| `bots/pipeline_digest.py` | LIVE | Weekly Monday 9am pipeline health summary |
 
 ## Bot SOUL Files
 
@@ -35,8 +42,9 @@ Watchdog and the bots are external observers.
 
 | File | Purpose |
 |------|---------|
-| `schema/pipeline_runs.md` | Job receipt table schema |
+| `schema/pipeline_runs.md` | Job receipt table schema (includes last_checkpoint_at) |
 | `schema/bot_alerts.md` | Alert ledger schema |
+| `bot_interactions` table | Training data: all bot observations, remediations, insights (in Supabase, no doc yet) |
 
 ## Registry
 
