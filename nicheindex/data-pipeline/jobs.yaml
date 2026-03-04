@@ -201,6 +201,17 @@ jobs:
       severity: low
     enabled: true
 
+  product-intelligence:
+    script: product_intelligence.py
+    location: bots
+    schedule:
+      - { day_of_week: "sun", hour: 20, minute: 0 }
+    monitoring:
+      lookback_hours: 168
+      max_per_window: 1
+      severity: low
+    enabled: true
+
   media-kit-collector:
     script: media_kit_collector.py
     location: bots

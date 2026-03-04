@@ -95,3 +95,29 @@ Highest value: [column_name] — [one sentence on what it shows].
 Same as NicheIndex brand: data-backed, direct, no adjectives without numbers.
 "Finance newsletters that charge $15+/mo average 89 interactions per post.
 The median free Finance newsletter gets 12." That's a product feature.
+
+---
+
+## Implementation Notes (Phase 1 — Session 36)
+
+### Runner: `product_intelligence.py`
+- SQL layer: 6 signal functions + scorecard + RED alert check
+- LLM layer: Claude Haiku narration (degrades gracefully if API unavailable)
+- Directive layer: max 3 proposed per run, overflow logged as 'logged' status
+- Significance thresholds filter noise (category momentum >5%, breakout >20%, etc.)
+- All runs logged to bot_interactions (training data for $599 product)
+- Directives written to bot_directives table
+- Error handling: ro_conn.rollback() on signal failures, try/except on RED check + scorecard, finally block on write conn
+
+### Env vars required
+- SUPABASE_READONLY_DB_URL — reads
+- DATABASE_URL — writes (bot_interactions, bot_directives)
+- DISCORD_WEBHOOK_PRODUCT_INSIGHTS — Discord #product-insights channel
+- ANTHROPIC_API_KEY — Claude Haiku for narration (optional, degrades gracefully)
+
+### Schedule
+- Sunday 8pm MST (runs after media-kit-collector at 6pm, before Monday digest at 9am)
+- jobs.yaml entry: product-intelligence, enabled: true
+
+### Phase 2 (next): Discord bot for reaction polling → approved directives
+### Phase 3 (after): Orchestrator reads bot_directives, dispatches to bots
