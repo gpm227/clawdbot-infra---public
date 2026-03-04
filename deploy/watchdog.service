@@ -1,0 +1,13 @@
+[Unit]
+Description=NicheIndex Pipeline Watchdog (one-shot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/clawdbot-infra/nicheindex/data-pipeline/infra
+EnvironmentFile=/home/ubuntu/clawdbot-infra/.env
+ExecStart=/home/ubuntu/clawdbot-infra/.venv/bin/python3 watchdog.py
+StandardOutput=journal
+StandardError=journal

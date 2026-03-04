@@ -1,0 +1,18 @@
+[Unit]
+Description=NicheIndex Pipeline Orchestrator (APScheduler)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/clawdbot-infra/nicheindex/data-pipeline/infra
+EnvironmentFile=/home/ubuntu/clawdbot-infra/.env
+ExecStart=/home/ubuntu/clawdbot-infra/.venv/bin/python3 orchestrator.py
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
