@@ -223,6 +223,18 @@ jobs:
       severity: low
     enabled: false   # SOUL file exists, runner script not yet built
 
+  newsletter-discovery:
+    script: newsletter_discovery.py
+    location: bots
+    # Auto-trigger: runs when subscription_queue depth < 500 (checked after sponsor-collector)
+    chain_after: sponsor-collector
+    chain_order: 1
+    monitoring:
+      lookback_hours: 96
+      max_per_window: 2
+      severity: low
+    enabled: false   # Phase 2 — script not yet built
+
   # -----------------------------------------------------------------------
   # FUTURE — not yet built
   # -----------------------------------------------------------------------
