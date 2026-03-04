@@ -568,7 +568,8 @@ def send_discord(message: str):
     for chunk in chunks:
         payload = json.dumps({"content": chunk}).encode()
         req = urllib.request.Request(DISCORD_WEBHOOK, data=payload,
-                                     headers={"Content-Type": "application/json"})
+                                     headers={"Content-Type": "application/json",
+                                              "User-Agent": "NicheIndex-Bot/1.0"})
         try:
             urllib.request.urlopen(req, timeout=10)
         except Exception as e:
