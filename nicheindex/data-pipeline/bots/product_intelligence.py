@@ -308,24 +308,62 @@ def signal_new_entrants(cur) -> list[dict]:
 # Daily Scorecard (quality x quantity check)
 # ---------------------------------------------------------------------------
 def compute_scorecard(cur) -> dict:
-    """Compute the daily health scorecard against spec targets."""
+    """Compute the daily health scorecard — flywheel + intelligence quality."""
     scorecard = {}
 
-    # Active publications (target: 16,500+)
-    cur.execute("SELECT count(*) AS n FROM publications WHERE is_inactive != true")
-    scorecard["active_pubs"] = cur.fetchone()["n"]
+    # === FLYWHEEL (acquisition health) ===
 
-    # Behavioral coverage (target: 100%)
+    # Subscription queue health
     cur.execute("""
         SELECT
-            (SELECT count(DISTINCT pa.publication_id) FROM publication_activity pa
-             JOIN publications p ON p.id = pa.publication_id WHERE p.is_inactive != true) AS covered,
-            (SELECT count(*) FROM publications WHERE is_inactive != true) AS total
+            count(*) FILTER (WHERE status = 'pending') AS pending,
+            count(*) FILTER (WHERE status = 'subscribed') AS subscribed,
+            count(*) FILTER (WHERE status = 'failed') AS failed,
+            count(*) FILTER (WHERE status = 'candidate') AS candidates
+        FROM subscription_queue
     """)
-    row = cur.fetchone()
-    scorecard["activity_coverage_pct"] = round(row["covered"] / max(row["total"], 1) * 100, 1)
+    q = cur.fetchone()
+    scorecard["queue_pending"] = q["pending"]
+    scorecard["queue_subscribed"] = q["subscribed"]
+    scorecard["queue_failed"] = q["failed"]
+    scorecard["queue_candidates"] = q["candidates"]
 
-    # Pipeline success rate (target: >95%, last 24h)
+    # Active email subscriptions + inbox volume
+    cur.execute("SELECT count(*) AS n FROM email_subscriptions WHERE status = 'subscribed'")
+    scorecard["active_subscriptions"] = cur.fetchone()["n"]
+
+    cur.execute("SELECT count(*) AS n FROM inbound_emails WHERE created_at >= now() - interval '7 days'")
+    scorecard["inbox_volume_7d"] = cur.fetchone()["n"]
+
+    # === INTELLIGENCE QUALITY (Substack engagement + growth) ===
+
+    # Median engagement across active pubs (likes per post)
+    cur.execute("""
+        SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY pa.like_count) AS median_likes,
+               avg(pa.like_count) AS avg_likes
+        FROM publication_activity pa
+        JOIN publications p ON p.id = pa.publication_id
+        WHERE p.is_inactive != true AND pa.like_count > 0
+    """)
+    eng = cur.fetchone()
+    scorecard["median_engagement"] = round(float(eng["median_likes"] or 0), 1)
+    scorecard["avg_engagement"] = round(float(eng["avg_likes"] or 0), 1)
+
+    # 7-day subscriber growth across all active pubs
+    cur.execute("""
+        SELECT sum(subscriber_growth_7d_abs) AS total_growth,
+               avg(subscriber_growth_7d_pct) AS avg_growth_pct
+        FROM niche_trends
+        WHERE computed_at >= now() - interval '8 days'
+        AND subscriber_growth_7d_abs IS NOT NULL
+    """)
+    growth = cur.fetchone()
+    scorecard["total_sub_growth_7d"] = int(growth["total_growth"] or 0)
+    scorecard["avg_sub_growth_pct_7d"] = round(float(growth["avg_growth_pct"] or 0), 2)
+
+    # === INFRASTRUCTURE ===
+
+    # Pipeline success rate (last 24h)
     cur.execute("""
         SELECT count(*) AS total,
                count(*) FILTER (WHERE status = 'completed') AS passed
@@ -336,19 +374,9 @@ def compute_scorecard(cur) -> dict:
     scorecard["pipeline_success_pct"] = round(row["passed"] / max(row["total"], 1) * 100, 1)
     scorecard["pipeline_runs_24h"] = row["total"]
 
-    # Inbox volume (target: 500+ emails/week)
-    cur.execute("""
-        SELECT count(*) AS n FROM inbound_emails
-        WHERE created_at >= now() - interval '7 days'
-    """)
-    scorecard["inbox_volume_7d"] = cur.fetchone()["n"]
-
-    # Email subscriptions (how many newsletters we're subscribed to)
-    cur.execute("""
-        SELECT count(*) AS n FROM email_subscriptions
-        WHERE status = 'subscribed'
-    """)
-    scorecard["active_subscriptions"] = cur.fetchone()["n"]
+    # Active publications (context, not a target)
+    cur.execute("SELECT count(*) AS n FROM publications WHERE is_inactive != true")
+    scorecard["active_pubs"] = cur.fetchone()["n"]
 
     # NI Rating coverage
     cur.execute("""
@@ -409,15 +437,16 @@ SCORECARD:
 RED ALERTS:
 {red_text}
 
-TARGETS (from data strategy spec):
-- Active publications: 16,500+
-- Behavioral coverage: 100%
+WHAT MATTERS (flywheel health, not vanity metrics):
+- Active subscriptions: growing toward 500+ (more subs = more inbox data = better intelligence)
+- Inbox volume: growing toward 500+ emails/week (the raw fuel for content scoring)
+- Queue depth: pending > 200 means flywheel is fed; < 50 means discovery bot needs to run
 - Pipeline success rate: >95%
-- Inbox volume: 500+ emails/week
-- Rating coverage: 100% partial, growing toward full
+- Non-Substack pubs: growing (Substack is the base; net-new platforms are the moat)
+- Active pub count is context, NOT a target — 16K Substack pubs is a nice base, not a goal
 
 Write exactly 3-5 bullets:
-1. Are we growing quality and volume per spec? (cite specific numbers vs targets)
+1. Flywheel health: are subscriptions and inbox volume growing? (cite numbers)
 2. Where are we lagging vs winning? (be specific — name the metric and gap)
 3-5. Specific Y/N action items for the bot army. Each must be concrete and actionable.
    Format: "Y/N: [action] — [one sentence reason]"
@@ -466,12 +495,12 @@ def generate_directives(signals: list[dict], scorecard: dict, red_alerts: list[d
             "priority": "high",
         })
 
-    if scorecard.get("activity_coverage_pct", 0) < 90:
+    if scorecard.get("queue_pending", 0) < 50:
         all_directives.append({
             "source": "product-intelligence",
-            "target_job": "bulk-archive-crawl",
-            "action": "Trigger bulk-archive-crawl to improve activity coverage",
-            "context": f"Activity coverage at {scorecard.get('activity_coverage_pct', 0)}%. Target: 100%.",
+            "target_job": "newsletter-discovery",
+            "action": "Queue running low — trigger discovery bot to refill",
+            "context": f"Only {scorecard.get('queue_pending', 0)} pending in subscription_queue. Need 200+ to keep flywheel fed.",
             "priority": "high",
         })
 
@@ -518,13 +547,15 @@ def format_discord_report(signals: list[dict], scorecard: dict,
         lines.append("")
 
     # Scorecard
-    lines.append("**SCORECARD**")
-    lines.append(f"  Active pubs: {scorecard.get('active_pubs', '?'):,}")
-    lines.append(f"  Activity coverage: {scorecard.get('activity_coverage_pct', '?')}%")
-    lines.append(f"  Pipeline success (24h): {scorecard.get('pipeline_success_pct', '?')}% ({scorecard.get('pipeline_runs_24h', '?')} runs)")
-    lines.append(f"  Inbox volume (7d): {scorecard.get('inbox_volume_7d', '?')} emails")
-    lines.append(f"  Active subscriptions: {scorecard.get('active_subscriptions', '?')}")
-    lines.append(f"  Rating coverage: {scorecard.get('rating_coverage_pct', '?')}% ({scorecard.get('full_rated_pubs', '?')} full-rated)")
+    lines.append("**FLYWHEEL**")
+    lines.append(f"  Queue: {scorecard.get('queue_pending', '?')} pending → {scorecard.get('queue_subscribed', '?')} subscribed, {scorecard.get('queue_failed', '?')} failed, {scorecard.get('queue_candidates', '?')} candidates")
+    lines.append(f"  Subscriptions: {scorecard.get('active_subscriptions', '?')} active")
+    lines.append(f"  Inbox: {scorecard.get('inbox_volume_7d', '?')} emails this week")
+    lines.append("")
+    lines.append("**INTELLIGENCE**")
+    lines.append(f"  Engagement: {scorecard.get('median_engagement', '?')} median / {scorecard.get('avg_engagement', '?')} avg likes per post")
+    lines.append(f"  Growth (7d): {scorecard.get('total_sub_growth_7d', '?'):,} total subs gained, {scorecard.get('avg_sub_growth_pct_7d', '?')}% avg")
+    lines.append(f"  Pubs: {scorecard.get('active_pubs', '?'):,} active | Pipeline: {scorecard.get('pipeline_success_pct', '?')}% ({scorecard.get('pipeline_runs_24h', '?')} runs)")
     lines.append("")
 
     # Signals
