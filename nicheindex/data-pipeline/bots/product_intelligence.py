@@ -70,7 +70,7 @@ def json_serial(obj):
 def signal_category_momentum(cur) -> list[dict]:
     """Which niches grew fastest this week?"""
     cur.execute("""
-        SELECT category_slug, subscriber_growth_7d_pct, subscriber_growth_7d_abs
+        SELECT category_name, subscriber_growth_7d_pct, subscriber_growth_7d_abs
         FROM niche_trends
         WHERE computed_at >= now() - interval '8 days'
         AND subscriber_growth_7d_pct IS NOT NULL
@@ -84,12 +84,12 @@ def signal_category_momentum(cur) -> list[dict]:
         if abs(pct) >= THRESHOLDS["category_momentum_pct"]:
             results.append({
                 "signal_type": "category_momentum",
-                "metric": f"{r['category_slug']} grew {pct:.1f}% this week",
+                "metric": f"{r['category_name']} grew {pct:.1f}% this week",
                 "value": pct,
                 "abs_growth": int(r["subscriber_growth_7d_abs"] or 0),
                 "threshold": THRESHOLDS["category_momentum_pct"],
                 "significant": True,
-                "category": r["category_slug"],
+                "category": r["category_name"],
             })
     return results
 
@@ -101,7 +101,7 @@ def signal_breakout_newsletter(cur) -> list[dict]:
     """Which single newsletter grew fastest?"""
     cur.execute("""
         SELECT fastest_growing_pub_name, fastest_growing_pub_growth_pct,
-               fastest_growing_pub_id, category_slug
+               fastest_growing_pub_id, category_name
         FROM niche_trends
         WHERE computed_at >= now() - interval '8 days'
         AND fastest_growing_pub_growth_pct IS NOT NULL
@@ -115,11 +115,11 @@ def signal_breakout_newsletter(cur) -> list[dict]:
         if pct >= THRESHOLDS["breakout_growth_pct"]:
             results.append({
                 "signal_type": "breakout_newsletter",
-                "metric": f"{r['fastest_growing_pub_name']} grew {pct:.1f}% in {r['category_slug']}",
+                "metric": f"{r['fastest_growing_pub_name']} grew {pct:.1f}% in {r['category_name']}",
                 "value": pct,
                 "pub_name": r["fastest_growing_pub_name"],
                 "pub_id": r["fastest_growing_pub_id"],
-                "category": r["category_slug"],
+                "category": r["category_name"],
                 "threshold": THRESHOLDS["breakout_growth_pct"],
                 "significant": True,
             })
@@ -281,7 +281,7 @@ def signal_unsurfaced_data(cur) -> list[dict]:
 def signal_new_entrants(cur) -> list[dict]:
     """Niches with the most new pubs this week."""
     cur.execute("""
-        SELECT category_slug, new_publications_7d
+        SELECT category_name, new_publications_7d
         FROM niche_trends
         WHERE computed_at >= now() - interval '8 days'
         AND new_publications_7d IS NOT NULL
@@ -295,9 +295,9 @@ def signal_new_entrants(cur) -> list[dict]:
         if count >= THRESHOLDS["new_entrants_min"]:
             results.append({
                 "signal_type": "new_entrants",
-                "metric": f"{r['category_slug']}: {count} new newsletters this week",
+                "metric": f"{r['category_name']}: {count} new newsletters this week",
                 "value": count,
-                "category": r["category_slug"],
+                "category": r["category_name"],
                 "threshold": THRESHOLDS["new_entrants_min"],
                 "significant": True,
             })
