@@ -234,6 +234,21 @@ def run_all_detectors(conn, job_registry: dict) -> list[dict[str, Any]]:
     """, (registered_names,))
     alerts.extend(cur.fetchall())
 
+    # 8. Queue depth — subscription_queue low on pending+candidate
+    cur.execute("""
+        SELECT 'low_queue_depth' AS alert_type, NULL AS job_name, 'yellow' AS severity,
+               format('Subscription queue low: %%s pending + %%s candidates = %%s total (threshold: 500).',
+                      pending, candidates, pending + candidates) AS message
+        FROM (
+            SELECT
+                count(*) FILTER (WHERE status = 'pending') AS pending,
+                count(*) FILTER (WHERE status = 'candidate') AS candidates
+            FROM subscription_queue
+        ) q
+        WHERE q.pending + q.candidates < 500
+    """)
+    alerts.extend(cur.fetchall())
+
     return [dict(a) for a in alerts]
 
 

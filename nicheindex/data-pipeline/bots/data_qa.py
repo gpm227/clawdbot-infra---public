@@ -67,6 +67,15 @@ COVERAGE_CHECKS = [
         """,
         "threshold": 0.95,
     },
+    {
+        "name": "subscription_queue",
+        "query": """
+            SELECT
+                (SELECT count(*) FROM subscription_queue) AS total_entries,
+                (SELECT count(*) FROM subscription_queue WHERE status IN ('pending', 'candidate', 'subscribed')) AS healthy_entries
+        """,
+        "threshold": 0.80,
+    },
 ]
 
 FRESHNESS_TABLES = [
@@ -75,6 +84,7 @@ FRESHNESS_TABLES = [
     ("publication_activity", "updated_at", 72),
     ("niche_trends", "computed_at", 48),
     ("niche_scores", "computed_at", 168),
+    ("subscription_queue", "discovered_at", 72),
 ]
 
 

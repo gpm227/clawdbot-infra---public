@@ -34,6 +34,7 @@ THRESHOLDS = {
     "velocity_deviation_pct": 25.0,       # Only if >25% deviation from last week
     "unsurfaced_coverage_pct": 95.0,      # Only if >95% coverage
     "new_entrants_min": 3,                # Only if 3+ new pubs in a niche
+    "acquisition_velocity_pct": 10.0,     # Only if >10% week-over-week change in subscribe rate
 }
 
 MAX_DIRECTIVES = 3  # Cap per run — ranked by impact
@@ -301,6 +302,47 @@ def signal_new_entrants(cur) -> list[dict]:
                 "threshold": THRESHOLDS["new_entrants_min"],
                 "significant": True,
             })
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Signal 7: Acquisition Velocity
+# ---------------------------------------------------------------------------
+def signal_acquisition_velocity(cur) -> list[dict]:
+    """Week-over-week subscribe rate from subscription_queue."""
+    cur.execute("""
+        SELECT
+            count(*) FILTER (WHERE status = 'subscribed'
+                AND processed_at >= now() - interval '7 days') AS this_week,
+            count(*) FILTER (WHERE status = 'subscribed'
+                AND processed_at >= now() - interval '14 days'
+                AND processed_at < now() - interval '7 days') AS last_week
+        FROM subscription_queue
+    """)
+    row = cur.fetchone()
+    this_week = int(row["this_week"] or 0)
+    last_week = int(row["last_week"] or 0)
+
+    if last_week == 0 and this_week == 0:
+        return []
+
+    if last_week == 0:
+        pct_change = 100.0  # first week with data
+    else:
+        pct_change = (this_week - last_week) / last_week * 100
+
+    results = []
+    if abs(pct_change) >= THRESHOLDS["acquisition_velocity_pct"]:
+        direction = "up" if pct_change > 0 else "down"
+        results.append({
+            "signal_type": "acquisition_velocity",
+            "metric": f"Subscription rate {direction} {abs(pct_change):.0f}% WoW ({this_week} vs {last_week} last week)",
+            "value": pct_change,
+            "this_week": this_week,
+            "last_week": last_week,
+            "threshold": THRESHOLDS["acquisition_velocity_pct"],
+            "significant": True,
+        })
     return results
 
 
@@ -724,6 +766,7 @@ def main():
         signal_velocity_benchmarks,
         signal_unsurfaced_data,
         signal_new_entrants,
+        signal_acquisition_velocity,
     ]
     for fn in signal_fns:
         try:

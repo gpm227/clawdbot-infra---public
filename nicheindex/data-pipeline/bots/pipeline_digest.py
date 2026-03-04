@@ -83,11 +83,38 @@ def compute_digest(ro_conn) -> dict:
     """)
     remediation_stats = cur.fetchone()
 
+    # Acquisition flywheel stats
+    cur.execute("""
+        SELECT
+            count(*) FILTER (WHERE status = 'pending') AS pending,
+            count(*) FILTER (WHERE status = 'candidate') AS candidates,
+            count(*) FILTER (WHERE status = 'subscribed') AS subscribed,
+            count(*) FILTER (WHERE status = 'failed') AS failed,
+            count(*) FILTER (WHERE status = 'rejected') AS rejected,
+            count(*) FILTER (WHERE status = 'subscribed'
+                AND processed_at >= now() - interval '7 days') AS subscribed_this_week
+        FROM subscription_queue
+    """)
+    queue_stats = cur.fetchone()
+
+    # Top verticals by queue entries
+    cur.execute("""
+        SELECT sq.vertical, count(*) AS cnt
+        FROM subscription_queue sq
+        WHERE sq.vertical IS NOT NULL
+        GROUP BY sq.vertical
+        ORDER BY cnt DESC
+        LIMIT 5
+    """)
+    top_verticals = cur.fetchall()
+
     return {
         "job_stats": [dict(j) for j in job_stats],
         "alert_stats": dict(alert_stats) if alert_stats else {},
         "data_stats": dict(data_stats) if data_stats else {},
         "remediation_count": remediation_stats["remediations"] if remediation_stats else 0,
+        "queue_stats": dict(queue_stats) if queue_stats else {},
+        "top_verticals": [dict(v) for v in top_verticals] if top_verticals else [],
     }
 
 
@@ -124,6 +151,16 @@ def format_digest(data: dict) -> str:
     lines.append(f"  Active publications: {ds.get('active_pubs', '?')}")
     lines.append(f"  New snapshots (7d): {ds.get('new_snapshots', '?')}")
     lines.append(f"  Activity updates (7d): {ds.get('updated_activity', '?')}")
+
+    qs = data.get("queue_stats", {})
+    if qs:
+        lines.append(f"\n**ACQUISITION FLYWHEEL**")
+        lines.append(f"  Queue: {qs.get('pending', 0)} pending, {qs.get('candidates', 0)} candidates, {qs.get('subscribed', 0)} subscribed, {qs.get('failed', 0)} failed, {qs.get('rejected', 0)} rejected")
+        lines.append(f"  New subscriptions this week: {qs.get('subscribed_this_week', 0)}")
+        verts = data.get("top_verticals", [])
+        if verts:
+            vert_parts = [f"{v['vertical']} ({v['cnt']})" for v in verts]
+            lines.append(f"  Top verticals: {' · '.join(vert_parts)}")
 
     return "\n".join(lines)
 
