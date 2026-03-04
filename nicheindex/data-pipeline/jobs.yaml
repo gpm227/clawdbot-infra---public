@@ -233,7 +233,7 @@ jobs:
       lookback_hours: 96
       max_per_window: 2
       severity: low
-    enabled: false   # Phase 2 — script not yet built
+    enabled: true
 
   # -----------------------------------------------------------------------
   # FUTURE — not yet built
