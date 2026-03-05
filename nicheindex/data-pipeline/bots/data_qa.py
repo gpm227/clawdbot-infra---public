@@ -1,20 +1,28 @@
 #!/usr/bin/env python3
 """
 NicheIndex Data QA Bot
-Daily post-census reconciliation: verify what pipeline scripts claim vs what's in Supabase.
-Posts to #data-qa Discord channel. Logs to bot_interactions for training data.
+Daily post-census reconciliation + target-based quality measurement.
+
+Three check categories:
+  1. Receipts vs Reality — do pipeline_runs match actual DB counts?
+  2. Coverage & Freshness — are tables populated and current?
+  3. Target Measurement — measure actuals vs data_targets.yaml per quality lens
+
+Posts to #data-qa Discord channel. Logs to bot_interactions + decision_log.
 
 Uses SUPABASE_READONLY_DB_URL for all reads (never writes to app tables).
-Uses DATABASE_URL for bot_interactions writes only.
+Uses DATABASE_URL for bot_interactions and decision_log writes only.
 """
 
 import os
 import sys
 import json
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 import psycopg2
 import psycopg2.extras
+import yaml
 
 # ---------------------------------------------------------------------------
 # Config
@@ -22,6 +30,10 @@ import psycopg2.extras
 READONLY_DSN = os.environ.get("SUPABASE_READONLY_DB_URL", "")
 WRITE_DSN = os.environ.get("DATABASE_URL", "")
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_DATA_QA", os.environ.get("DISCORD_WEBHOOK_URL", ""))
+
+BOTS_DIR = Path(__file__).parent
+DATA_DIR = BOTS_DIR.parent
+TARGETS_FILE = DATA_DIR / "data_targets.yaml"
 
 # Mapping: job_name -> [(target_table, count_column, date_column)]
 JOB_TARGET_MAP = {
@@ -45,38 +57,6 @@ JOB_TARGET_MAP = {
         ("publications", "id", "ni_rated_at"),
     ],
 }
-
-COVERAGE_CHECKS = [
-    {
-        "name": "publication_activity",
-        "query": """
-            SELECT
-                (SELECT count(*) FROM publications WHERE is_inactive != true) AS total_active,
-                (SELECT count(DISTINCT pa.publication_id) FROM publication_activity pa
-                 JOIN publications p ON p.id = pa.publication_id
-                 WHERE p.is_inactive != true) AS with_activity
-        """,
-        "threshold": 0.85,
-    },
-    {
-        "name": "niche_scores",
-        "query": """
-            SELECT
-                (SELECT count(DISTINCT niche) FROM publications WHERE is_inactive != true AND niche IS NOT NULL) AS total_niches,
-                (SELECT count(*) FROM niche_scores) AS scored_niches
-        """,
-        "threshold": 0.95,
-    },
-    {
-        "name": "subscription_queue",
-        "query": """
-            SELECT
-                (SELECT count(*) FROM subscription_queue) AS total_entries,
-                (SELECT count(*) FROM subscription_queue WHERE status IN ('pending', 'candidate', 'subscribed')) AS healthy_entries
-        """,
-        "threshold": 0.80,
-    },
-]
 
 FRESHNESS_TABLES = [
     ("publications", "updated_at", 48),
@@ -160,38 +140,7 @@ def check_receipts_vs_reality(ro_conn) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Check 2: Coverage
-# ---------------------------------------------------------------------------
-def check_coverage(ro_conn) -> list[dict]:
-    results = []
-    cur = ro_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
-    for check in COVERAGE_CHECKS:
-        try:
-            cur.execute(check["query"])
-            row = cur.fetchone()
-            if row:
-                vals = list(row.values())
-                total = vals[0] or 1
-                covered = vals[1] or 0
-                pct = covered / total if total > 0 else 0
-                passed = pct >= check["threshold"]
-                results.append({
-                    "name": check["name"],
-                    "total": total,
-                    "covered": covered,
-                    "pct": round(pct * 100, 1),
-                    "threshold": check["threshold"] * 100,
-                    "passed": passed,
-                })
-        except Exception as e:
-            results.append({"name": check["name"], "error": str(e), "passed": False})
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Check 3: Freshness
+# Check 2: Freshness
 # ---------------------------------------------------------------------------
 def check_freshness(ro_conn) -> list[dict]:
     results = []
@@ -224,41 +173,202 @@ def check_freshness(ro_conn) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Check 3: Target Measurement (NEW — reads data_targets.yaml)
+# ---------------------------------------------------------------------------
+def load_targets() -> dict:
+    """Load data_targets.yaml."""
+    if not TARGETS_FILE.exists():
+        print(f"WARNING: {TARGETS_FILE} not found. Skipping target checks.", file=sys.stderr)
+        return {}
+    with open(TARGETS_FILE) as f:
+        return yaml.safe_load(f)
+
+
+def measure_targets(ro_conn) -> list[dict]:
+    """Measure each target from data_targets.yaml against actual DB state."""
+    targets = load_targets()
+    if not targets:
+        return []
+
+    results = []
+    cur = ro_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    for lens_name, checks in targets.items():
+        if not isinstance(checks, dict):
+            continue
+        for check_name, spec in checks.items():
+            if not isinstance(spec, dict) or 'query' not in spec:
+                continue
+
+            try:
+                cur.execute(spec['query'])
+                row = cur.fetchone()
+                actual = row['actual'] if row and 'actual' in row else 0
+
+                # Determine target and type
+                if 'target_pct' in spec:
+                    # Percentage target — need denominator
+                    denom = 1
+                    if 'denominator_query' in spec:
+                        cur.execute(spec['denominator_query'])
+                        drow = cur.fetchone()
+                        denom = list(drow.values())[0] if drow else 1
+                    pct = round((actual / denom * 100) if denom > 0 else 0, 1)
+                    target_val = spec['target_pct']
+                    passed = pct >= target_val
+                    gap = round(pct - target_val, 1)
+                    results.append({
+                        "lens": lens_name,
+                        "check": check_name,
+                        "metric": spec.get('metric', check_name),
+                        "actual": actual,
+                        "actual_pct": pct,
+                        "target_pct": target_val,
+                        "gap_pct": gap,
+                        "passed": passed,
+                        "severity": spec.get('severity', 'medium'),
+                    })
+                elif 'target' in spec:
+                    # Absolute target
+                    target_val = spec['target']
+                    passed = actual >= target_val
+                    gap = actual - target_val
+                    results.append({
+                        "lens": lens_name,
+                        "check": check_name,
+                        "metric": spec.get('metric', check_name),
+                        "actual": actual,
+                        "target": target_val,
+                        "gap": gap,
+                        "passed": passed,
+                        "severity": spec.get('severity', 'medium'),
+                    })
+
+            except Exception as e:
+                results.append({
+                    "lens": lens_name,
+                    "check": check_name,
+                    "metric": spec.get('metric', check_name),
+                    "error": str(e),
+                    "passed": False,
+                    "severity": spec.get('severity', 'medium'),
+                })
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Recommendations engine
+# ---------------------------------------------------------------------------
+def generate_recommendations(target_results) -> list[dict]:
+    """Generate operational or strategic recommendations based on gaps."""
+    recs = []
+    for t in target_results:
+        if t.get('passed', True):
+            continue
+        if t.get('error'):
+            continue
+
+        gap_info = ""
+        if 'gap_pct' in t:
+            gap_info = f"{t['actual_pct']}% vs {t['target_pct']}% target (gap: {t['gap_pct']}%)"
+        elif 'gap' in t:
+            gap_info = f"{t['actual']} vs {t['target']} target (gap: {t['gap']})"
+
+        # Classify as operational vs strategic
+        severity = t.get('severity', 'medium')
+        check = t.get('check', '')
+
+        if check in ('census_chain', 'archive_crawl'):
+            category = 'operational'
+            action = f"Check if {check} ran. Verify orchestrator logs."
+        elif check == 'events_populated':
+            category = 'operational'
+            action = "Events table may not have emitting chain jobs yet. Check if rising-scorer ran."
+        elif 'rss' in check:
+            category = 'strategic'
+            action = "RSS failure rate too high. Recommend: run auto-discovery on failing feeds."
+        elif 'ad_ratio' in check:
+            category = 'strategic'
+            action = "Ad detector not yet shipped. Blocked on Week 2 pipeline work."
+        else:
+            category = 'strategic'
+            action = f"Gap in {t.get('lens', 'unknown')} lens: {t.get('metric', check)}."
+
+        recs.append({
+            "check": check,
+            "lens": t.get('lens', 'unknown'),
+            "category": category,
+            "severity": severity,
+            "gap": gap_info,
+            "recommendation": action,
+        })
+
+    return recs
+
+
+# ---------------------------------------------------------------------------
 # Discord + logging
 # ---------------------------------------------------------------------------
-def format_discord_report(receipts, coverage, freshness) -> str:
+def format_discord_report(receipts, freshness, target_results, recommendations) -> str:
     lines = [f"**Daily Data QA** — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"]
 
+    # Receipts
     lines.append("**RECEIPTS VS REALITY**")
     for r in receipts:
         if r.get("error"):
             lines.append(f"  {r['job_name']} → {r['table']}: ERROR ({r['error'][:80]})")
         elif r["status"] == "match":
-            lines.append(f"  {r['job_name']} → {r['table']}: {r['reported']} reported, {r['actual']} found (match)")
+            lines.append(f"  {r['job_name']} → {r['table']}: {r['actual']} (match)")
         else:
-            emoji = "over-reported" if r["delta"] > 0 else "under-reported"
-            lines.append(f"  {r['job_name']} → {r['table']}: {r['reported']} reported, {r['actual']} found (delta: {r['delta']}, {emoji})")
-
+            lines.append(f"  {r['job_name']} → {r['table']}: {r['reported']} reported, {r['actual']} found (delta: {r['delta']})")
     if not receipts:
         lines.append("  No completed runs in last 26h")
 
-    lines.append("\n**COVERAGE**")
-    for c in coverage:
-        if c.get("error"):
-            lines.append(f"  {c['name']}: ERROR ({c['error'][:80]})")
-        else:
-            icon = "PASS" if c["passed"] else "WARN"
-            lines.append(f"  [{icon}] {c['name']}: {c['covered']}/{c['total']} ({c['pct']}%, threshold: {c['threshold']}%)")
-
+    # Freshness
     lines.append("\n**FRESHNESS**")
     for f in freshness:
         if f.get("error"):
-            lines.append(f"  {f['table']}: ERROR ({f['error'][:80]})")
+            lines.append(f"  {f['table']}: ERROR")
         elif f["newest"] is None:
             lines.append(f"  {f['table']}: NO DATA")
         else:
-            icon = "PASS" if f["passed"] else "STALE"
+            icon = "OK" if f["passed"] else "STALE"
             lines.append(f"  [{icon}] {f['table']}: {f['age_hours']}h old (max: {f['max_age_hours']}h)")
+
+    # Target results by lens
+    if target_results:
+        lines.append("\n**QUALITY TARGETS**")
+
+        # Group by lens
+        by_lens = {}
+        for t in target_results:
+            lens = t.get('lens', 'unknown')
+            by_lens.setdefault(lens, []).append(t)
+
+        for lens, checks in by_lens.items():
+            lines.append(f"\n  __{lens}__")
+            for c in checks:
+                if c.get('error'):
+                    lines.append(f"    [ERR] {c.get('metric', c['check'])}: {c['error'][:60]}")
+                elif c['passed']:
+                    if 'actual_pct' in c:
+                        lines.append(f"    [OK] {c.get('metric', c['check'])}: {c['actual_pct']}%")
+                    else:
+                        lines.append(f"    [OK] {c.get('metric', c['check'])}: {c['actual']}")
+                else:
+                    if 'gap_pct' in c:
+                        lines.append(f"    [GAP] {c.get('metric', c['check'])}: {c['actual_pct']}% (target: {c['target_pct']}%)")
+                    else:
+                        lines.append(f"    [GAP] {c.get('metric', c['check'])}: {c['actual']} (target: {c['target']})")
+
+    # Recommendations
+    if recommendations:
+        lines.append("\n**RECOMMENDATIONS**")
+        for r in recommendations:
+            icon = "AUTO" if r['category'] == 'operational' else "REVIEW"
+            lines.append(f"  [{icon}] [{r['severity'].upper()}] {r['recommendation']}")
+            lines.append(f"         Gap: {r['gap']}")
 
     return "\n".join(lines)
 
@@ -270,8 +380,14 @@ def send_discord(message: str):
         return
     import urllib.request
     payload = json.dumps({"content": message[:2000]}).encode()
-    req = urllib.request.Request(DISCORD_WEBHOOK, data=payload,
-                                 headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(
+        DISCORD_WEBHOOK,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "NicheIndex-Bot/1.0",
+        },
+    )
     try:
         urllib.request.urlopen(req, timeout=10)
     except Exception as e:
@@ -291,6 +407,24 @@ def log_interaction(write_conn, observation: dict):
         write_conn.rollback()
 
 
+def log_recommendations(write_conn, recommendations: list[dict]):
+    """Log strategic recommendations to decision_log for learning."""
+    cur = write_conn.cursor()
+    for rec in recommendations:
+        if rec['category'] != 'strategic':
+            continue
+        try:
+            cur.execute("""
+                INSERT INTO decision_log (bot_name, category, recommendation)
+                VALUES ('data-qa', %s, %s)
+            """, (rec['category'], f"[{rec['lens']}] {rec['recommendation']} | Gap: {rec['gap']}"))
+        except Exception as e:
+            print(f"WARNING: Failed to log recommendation: {e}", file=sys.stderr)
+            write_conn.rollback()
+            return
+    write_conn.commit()
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -302,26 +436,35 @@ def main():
     receipts = check_receipts_vs_reality(ro_conn)
     print(f"Receipt checks: {len(receipts)}")
 
-    coverage = check_coverage(ro_conn)
-    print(f"Coverage checks: {len(coverage)}")
-
     freshness = check_freshness(ro_conn)
     print(f"Freshness checks: {len(freshness)}")
 
+    target_results = measure_targets(ro_conn)
+    print(f"Target checks: {len(target_results)}")
+    passed = sum(1 for t in target_results if t.get('passed'))
+    failed = sum(1 for t in target_results if not t.get('passed'))
+    print(f"  Passed: {passed}, Gaps: {failed}")
+
+    recommendations = generate_recommendations(target_results)
+    print(f"Recommendations: {len(recommendations)}")
+
     ro_conn.close()
 
-    report = format_discord_report(receipts, coverage, freshness)
+    report = format_discord_report(receipts, freshness, target_results, recommendations)
     send_discord(report)
 
     try:
         write_conn = get_write_conn()
         log_interaction(write_conn, {
             "receipts": receipts,
-            "coverage": coverage,
             "freshness": freshness,
-            "has_deltas": any(r.get("delta", 0) != 0 for r in receipts if r.get("status") != "error"),
-            "all_fresh": all(f.get("passed", False) for f in freshness),
+            "targets": target_results,
+            "recommendations": recommendations,
+            "targets_passed": passed,
+            "targets_failed": failed,
         })
+        if recommendations:
+            log_recommendations(write_conn, recommendations)
         write_conn.close()
     except Exception as e:
         print(f"WARNING: Could not log interaction: {e}", file=sys.stderr)

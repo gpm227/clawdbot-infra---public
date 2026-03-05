@@ -138,6 +138,17 @@ jobs:
       severity: medium
     enabled: true
 
+  rising-scorer:
+    script: rising_scorer.py
+    location: pipeline
+    chain_after: daily-census
+    chain_order: 8
+    monitoring:
+      lookback_hours: 26
+      max_per_window: 1
+      severity: medium
+    enabled: true
+
   # -----------------------------------------------------------------------
   # LOW PRIORITY — archive crawls and discovery
   # -----------------------------------------------------------------------

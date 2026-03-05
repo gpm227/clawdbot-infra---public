@@ -1,0 +1,200 @@
+# data_targets.yaml — Weekly data quality targets by quality lens
+# QC bot (data_qa.py) reads this to measure actuals vs targets.
+# Updated: 2026-03-05
+
+audience_quality:
+  subscriber_data:
+    metric: "Active pubs with subscriber count > 0"
+    query: >
+      SELECT count(*) AS actual
+      FROM publications
+      WHERE is_inactive != true AND free_subscriber_count > 0
+    target_pct: 100
+    denominator_query: >
+      SELECT count(*) FROM publications WHERE is_inactive != true
+    severity: high
+
+  growth_trajectory_depth:
+    metric: "Pubs with 14d+ snapshot history"
+    query: >
+      SELECT count(DISTINCT publication_id) AS actual
+      FROM publication_snapshots
+      WHERE snapshot_date >= now() - interval '14 days'
+    target: 14000
+    week1_target: 14555
+    week2_target: 14555
+    severity: medium
+
+  engagement_coverage:
+    metric: "Active pubs with avg_engagement data"
+    query: >
+      SELECT count(DISTINCT pa.publication_id) AS actual
+      FROM publication_activity pa
+      JOIN publications p ON p.id = pa.publication_id
+      WHERE p.is_inactive != true AND pa.avg_engagement IS NOT NULL
+    target_pct: 92
+    denominator_query: >
+      SELECT count(*) FROM publications WHERE is_inactive != true
+    severity: medium
+
+  paid_conversion_visibility:
+    metric: "Active pubs with has_paid_plan known"
+    query: >
+      SELECT count(*) AS actual
+      FROM publications
+      WHERE is_inactive != true AND has_paid_plan IS NOT NULL
+    target_pct: 68
+    denominator_query: >
+      SELECT count(*) FROM publications WHERE is_inactive != true
+    severity: low
+
+content_quality:
+  cadence_coverage:
+    metric: "Active pubs with posts_30d data"
+    query: >
+      SELECT count(DISTINCT pa.publication_id) AS actual
+      FROM publication_activity pa
+      JOIN publications p ON p.id = pa.publication_id
+      WHERE p.is_inactive != true AND pa.posts_30d IS NOT NULL
+    target_pct: 92
+    denominator_query: >
+      SELECT count(*) FROM publications WHERE is_inactive != true
+    severity: medium
+
+  health_pill_accuracy:
+    metric: "Active pubs with activity data <7 days old"
+    query: >
+      SELECT count(DISTINCT pa.publication_id) AS actual
+      FROM publication_activity pa
+      JOIN publications p ON p.id = pa.publication_id
+      WHERE p.is_inactive != true
+        AND pa.last_post_date >= now() - interval '7 days'
+    target_pct: 97
+    denominator_query: >
+      SELECT count(*) FROM publications WHERE is_inactive != true
+    severity: high
+
+  word_count_coverage:
+    metric: "Active pubs with avg_word_count"
+    query: >
+      SELECT count(DISTINCT pa.publication_id) AS actual
+      FROM publication_activity pa
+      JOIN publications p ON p.id = pa.publication_id
+      WHERE p.is_inactive != true AND pa.avg_word_count IS NOT NULL
+    target_pct: 92
+    denominator_query: >
+      SELECT count(*) FROM publications WHERE is_inactive != true
+    severity: medium
+
+  velocity_coverage:
+    metric: "Active pubs with content_velocity"
+    query: >
+      SELECT count(DISTINCT pa.publication_id) AS actual
+      FROM publication_activity pa
+      JOIN publications p ON p.id = pa.publication_id
+      WHERE p.is_inactive != true AND pa.content_velocity IS NOT NULL
+    target_pct: 92
+    denominator_query: >
+      SELECT count(*) FROM publications WHERE is_inactive != true
+    severity: medium
+
+  rss_reliability:
+    metric: "RSS feed parse success rate"
+    query: >
+      SELECT count(*) AS actual
+      FROM publications
+      WHERE is_inactive != true AND rss_url IS NOT NULL
+        AND rss_url != ''
+    target_pct: 85
+    denominator_query: >
+      SELECT count(*) FROM publications WHERE is_inactive != true
+    note: "Proxy: pubs with RSS URL. True measure needs RSS pulse logs."
+    severity: high
+
+  ad_ratio_coverage:
+    metric: "Active pubs with ni_ads_ratio"
+    query: >
+      SELECT count(*) AS actual
+      FROM publications
+      WHERE is_inactive != true AND ni_ads_ratio IS NOT NULL
+    target_pct: 0
+    week2_target_pct: 50
+    severity: low
+    note: "Blocked on ad detector shipping in Week 2"
+
+pipeline_health:
+  census_chain:
+    metric: "Census + 8 chain jobs completed in last 26h"
+    query: >
+      SELECT count(DISTINCT job_name) AS actual
+      FROM pipeline_runs
+      WHERE status = 'completed'
+        AND completed_at >= now() - interval '26 hours'
+        AND job_name IN ('daily-census','niche-trends','growth-delta',
+                         'inactive-detector','new-entrant-detector',
+                         'auto-rater','data-qa','rising-scorer')
+    target: 8
+    severity: high
+
+  archive_crawl:
+    metric: "Archive crawl completed in last 96h"
+    query: >
+      SELECT count(*) AS actual
+      FROM pipeline_runs
+      WHERE status = 'completed'
+        AND completed_at >= now() - interval '96 hours'
+        AND job_name IN ('archive-crawl', 'bulk-archive-crawl')
+    target: 1
+    severity: high
+
+  snapshot_depth:
+    metric: "Days of snapshot history"
+    query: >
+      SELECT extract(day from (max(snapshot_date) - min(snapshot_date))) AS actual
+      FROM publication_snapshots
+    target: 22
+    week2_target: 29
+    severity: medium
+
+  events_populated:
+    metric: "Publication events in last 26h"
+    query: >
+      SELECT count(*) AS actual
+      FROM publication_events
+      WHERE event_date >= now() - interval '26 hours'
+    target: 1
+    note: "At least some events should be emitted per census cycle"
+    severity: medium
+
+icp_signals:
+  logo_render_ready:
+    metric: "Active pubs with logo_url"
+    query: >
+      SELECT count(*) AS actual
+      FROM publications
+      WHERE is_inactive != true AND logo_url IS NOT NULL AND logo_url != ''
+    target_pct: 96
+    denominator_query: >
+      SELECT count(*) FROM publications WHERE is_inactive != true
+    severity: low
+
+  ni_rating_coverage:
+    metric: "Active pubs with ni_rating"
+    query: >
+      SELECT count(*) AS actual
+      FROM publications
+      WHERE is_inactive != true AND ni_rating IS NOT NULL
+    target_pct: 99
+    denominator_query: >
+      SELECT count(*) FROM publications WHERE is_inactive != true
+    severity: medium
+
+  rising_score_coverage:
+    metric: "Active pubs with rising_score"
+    query: >
+      SELECT count(*) AS actual
+      FROM publications
+      WHERE is_inactive != true AND rising_score IS NOT NULL
+    target: 1000
+    note: "Roughly 20-30% of eligible pubs should have a rising score"
+    severity: medium
