@@ -32,6 +32,8 @@ def load_job_registry() -> dict:
         config = yaml.safe_load(f)
     registry = {}
     for name, job in config.get("jobs", {}).items():
+        if not job.get("enabled", True):
+            continue  # skip disabled jobs
         mon = job.get("monitoring", {})
         if not mon:
             continue
@@ -302,7 +304,8 @@ def send_discord_alert(alert: dict[str, Any]):
     try:
         data = _json.dumps(payload).encode()
         req = urllib.request.Request(webhook_url, data=data,
-                                     headers={"Content-Type": "application/json"})
+                                     headers={"Content-Type": "application/json",
+                                              "User-Agent": "NicheIndex-Watchdog/1.0"})
         urllib.request.urlopen(req, timeout=10)
     except Exception as exc:
         print(f"WARNING: Discord webhook failed: {exc}", file=sys.stderr)

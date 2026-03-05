@@ -8,7 +8,7 @@ timezone: America/Denver
 
 # Relative paths from this file's directory
 pipeline_dir: ../../../nicheindex/pipeline
-bots_dir: ../bots
+bots_dir: ./bots
 
 # ---------------------------------------------------------------------------
 # Jobs

@@ -85,8 +85,15 @@ def run_job(cfg: dict, job_name: str, retry: bool = False) -> bool:
     attempt = "retry" if retry else "attempt 1"
     print(f"[orchestrator] Starting {job_name} ({attempt}) at {datetime.now(tz).strftime('%H:%M %Z')}")
 
+    # Use the correct venv python based on script location
+    job_spec = jobs[job_name]
+    if job_spec["location"] == "pipeline":
+        python = "/home/ubuntu/nicheindex/pipeline/.venv/bin/python3"
+    else:
+        python = "/home/ubuntu/clawdbot-infra/.venv/bin/python3"
+
     result = subprocess.run(
-        ["python3", str(script)],
+        [python, str(script)],
         cwd=cwd,
         capture_output=False,  # let output stream to terminal
     )
