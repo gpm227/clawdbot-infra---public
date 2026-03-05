@@ -184,7 +184,7 @@ jobs:
       lookback_hours: 48
       max_per_window: 2
       severity: low
-    enabled: true
+    enabled: false   # Replaced by signup_daemon.py (systemd service, 1 signup/15min 24/7)
 
   # -----------------------------------------------------------------------
   # WEEKLY
@@ -226,13 +226,14 @@ jobs:
   newsletter-discovery:
     script: newsletter_discovery.py
     location: bots
-    # Auto-trigger: runs when subscription_queue depth < 500 (checked after sponsor-collector)
-    chain_after: sponsor-collector
-    chain_order: 1
+    # Runs daily to keep subscription_queue fed (signup_daemon consumes ~96/day)
+    schedule:
+      - { hour: 6, minute: 0 }
+      - { hour: 18, minute: 0 }
     monitoring:
-      lookback_hours: 96
+      lookback_hours: 25
       max_per_window: 2
-      severity: low
+      severity: medium
     enabled: true
 
   # -----------------------------------------------------------------------
