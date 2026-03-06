@@ -95,7 +95,7 @@ def compute_pipeline(cur):
 
     # Failures in last 24h
     cur.execute("""
-        SELECT job_name, error_message
+        SELECT job_name, error_text
         FROM pipeline_runs
         WHERE started_at >= now() - interval '24 hours'
           AND status = 'failed'
@@ -104,7 +104,7 @@ def compute_pipeline(cur):
     failures = cur.fetchall()
     metrics["failure_count"] = len(failures)
     metrics["failures"] = [
-        {"job": f["job_name"], "error": (f.get("error_message") or "")[:80]}
+        {"job": f["job_name"], "error": (f.get("error_text") or "")[:80]}
         for f in failures
     ]
 
@@ -380,6 +380,7 @@ def main():
         print(f"WARNING: pipeline section failed: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         observation["pipeline_error"] = str(e)
+        ro_conn.rollback()
 
     try:
         coverage = compute_coverage(cur)
@@ -388,6 +389,7 @@ def main():
         print(f"WARNING: coverage section failed: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         observation["coverage_error"] = str(e)
+        ro_conn.rollback()
 
     try:
         crawler = compute_crawler(cur)
@@ -396,6 +398,7 @@ def main():
         print(f"WARNING: crawler section failed: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         observation["crawler_error"] = str(e)
+        ro_conn.rollback()
 
     ro_conn.close()
 
