@@ -1,43 +1,44 @@
 # jobs.yaml — Single source of truth for all NicheIndex pipeline jobs
-# Replaces hardcoded JOB_REGISTRY (watchdog.py) and SCRIPTS (orchestrator.py)
-#
-# This file is product-specific. Swap it + DATABASE_URL to monitor a different product.
+# Schedule philosophy: efficient runs that bring new data or fresh signal.
+# No redundant crawls. Frequency matches how fast the underlying data changes.
 
 project: nicheindex
 timezone: America/Denver
 
-# Relative paths from this file's directory
 pipeline_dir: ../../../nicheindex/pipeline
 bots_dir: ./bots
-
-# ---------------------------------------------------------------------------
-# Jobs
-# ---------------------------------------------------------------------------
-# Fields:
-#   script        — filename of the Python script
-#   location      — "pipeline" (pipeline_dir) or "bots" (bots_dir)
-#   schedule      — list of cron triggers (APScheduler CronTrigger kwargs)
-#   chain_after   — run after this job completes (instead of / in addition to cron)
-#   chain_order   — position in chain sequence (lower = runs first)
-#   monitoring    — watchdog detection config
-#     lookback_hours  — how far back to check for completed runs
-#     max_per_window  — max expected completions in lookback window
-#     severity        — high | medium | low
-#     window          — [start, end] Denver time; triggers outside_window alert
-#   enabled       — false to skip scheduling (script not yet built)
 
 jobs:
 
   # -----------------------------------------------------------------------
-  # HIGH PRIORITY — core data freshness
+  # HIGH PRIORITY — new data acquisition + core freshness
   # -----------------------------------------------------------------------
+
+  # email-signup-daemon runs as separate systemd service (24/7, every 8min)
+  # — not managed by orchestrator, but listed here for documentation
+
+  newsletter-discovery:
+    script: newsletter_discovery.py
+    location: bots
+    # Queue feeds the signup daemon (~180/day consumption).
+    # Sources update slowly (Ghost Explore, InboxReads) — 2x/day is sufficient.
+    # TODO: add queue-depth trigger (extra run if queue < 300)
+    schedule:
+      - { hour: 6, minute: 0 }
+      - { hour: 18, minute: 0 }
+    monitoring:
+      lookback_hours: 25
+      max_per_window: 2
+      severity: high
+    enabled: true
 
   rss-pulse:
     script: rss_pulse.py
     location: pipeline
+    # RSS feeds change constantly — 2x/day powers health pills in the product.
     schedule:
       - { hour: 8, minute: 0 }
-      - { hour: 19, minute: 30 }
+      - { hour: 20, minute: 30 }
     monitoring:
       lookback_hours: 25
       max_per_window: 2
@@ -47,18 +48,18 @@ jobs:
   daily-census:
     script: crawl.py
     location: pipeline
+    # Subscriber count snapshots — must run daily for growth tracking.
     schedule:
       - { hour: 20, minute: 0 }
     monitoring:
       lookback_hours: 26
       max_per_window: 1
       severity: high
-      window: ["20:00", "21:00"]
+      window: ["20:00", "22:00"]
     enabled: true
 
   # -----------------------------------------------------------------------
-  # MEDIUM PRIORITY — post-census chain
-  # Runs sequentially after daily-census completes, in chain_order
+  # MEDIUM PRIORITY — post-census chain (sequential after census)
   # -----------------------------------------------------------------------
 
   niche-trends:
@@ -150,55 +151,37 @@ jobs:
     enabled: true
 
   # -----------------------------------------------------------------------
-  # LOW PRIORITY — archive crawls and discovery
+  # BEHAVIORAL SIGNALS — archive + discovery crawls
   # -----------------------------------------------------------------------
 
   archive-crawl:
     script: crawl_archives.py
     location: pipeline
+    # Post frequency, engagement, word count. Most pubs post weekly/monthly,
+    # so 3x/week captures changes without redundant crawling.
     schedule:
-      - { day_of_week: "tue,fri", hour: 2, minute: 0 }
-    monitoring:
-      lookback_hours: 48
-      max_per_window: 1
-      severity: low
-    enabled: true
-
-  bulk-archive-crawl:
-    script: bulk_archive_crawl.py
-    location: pipeline
-    schedule:
-      - { day_of_week: "wed,sat", hour: 3, minute: 0 }
+      - { day_of_week: "mon,wed,fri", hour: 2, minute: 0 }
     monitoring:
       lookback_hours: 72
-      max_per_window: 1
+      max_per_window: 3
       severity: low
     enabled: true
 
   search-crawl:
     script: search_crawl.py
     location: pipeline
+    # Finds pubs beyond the 525/category browse cap.
+    # Substack search index updates slowly — 2x/week is enough.
     schedule:
-      - { day_of_week: "sun", hour: 4, minute: 0 }
+      - { day_of_week: "tue,sat", hour: 4, minute: 0 }
     monitoring:
-      lookback_hours: 48
-      max_per_window: 1
+      lookback_hours: 96
+      max_per_window: 2
       severity: low
     enabled: true
 
-  sponsor-collector:
-    script: sponsor_collector.py
-    location: pipeline
-    schedule:
-      - { day_of_week: "mon,thu", hour: 10, minute: 0 }
-    monitoring:
-      lookback_hours: 48
-      max_per_window: 2
-      severity: low
-    enabled: false   # Replaced by signup_daemon.py (systemd service, 1 signup/15min 24/7)
-
   # -----------------------------------------------------------------------
-  # WEEKLY
+  # WEEKLY REPORTS
   # -----------------------------------------------------------------------
 
   pipeline-digest:
@@ -215,13 +198,40 @@ jobs:
   product-intelligence:
     script: product_intelligence.py
     location: bots
+    # Moved from 8pm to 6pm to avoid collision with daily-census at 8pm.
     schedule:
-      - { day_of_week: "sun", hour: 20, minute: 0 }
+      - { day_of_week: "sun", hour: 18, minute: 0 }
     monitoring:
       lookback_hours: 168
       max_per_window: 1
       severity: low
     enabled: true
+
+  # -----------------------------------------------------------------------
+  # DISABLED — replaced or not yet built
+  # -----------------------------------------------------------------------
+
+  bulk-archive-crawl:
+    script: bulk_archive_crawl.py
+    location: pipeline
+    schedule:
+      - { day_of_week: "wed,sat", hour: 3, minute: 0 }
+    monitoring:
+      lookback_hours: 72
+      max_per_window: 1
+      severity: low
+    enabled: false   # Consolidated into archive-crawl (3x/week)
+
+  sponsor-collector:
+    script: sponsor_collector.py
+    location: pipeline
+    schedule:
+      - { day_of_week: "mon,thu", hour: 10, minute: 0 }
+    monitoring:
+      lookback_hours: 48
+      max_per_window: 2
+      severity: low
+    enabled: false   # Replaced by email-signup-daemon (systemd, 24/7)
 
   media-kit-collector:
     script: media_kit_collector.py
@@ -232,24 +242,7 @@ jobs:
       lookback_hours: 168
       max_per_window: 1
       severity: low
-    enabled: false   # SOUL file exists, runner script not yet built
-
-  newsletter-discovery:
-    script: newsletter_discovery.py
-    location: bots
-    # Runs daily to keep subscription_queue fed (signup_daemon consumes ~96/day)
-    schedule:
-      - { hour: 6, minute: 0 }
-      - { hour: 18, minute: 0 }
-    monitoring:
-      lookback_hours: 25
-      max_per_window: 2
-      severity: medium
-    enabled: true
-
-  # -----------------------------------------------------------------------
-  # FUTURE — not yet built
-  # -----------------------------------------------------------------------
+    enabled: false   # Not yet built
 
   inbox-scorer:
     script: inbox_scorer.py
@@ -261,7 +254,7 @@ jobs:
       lookback_hours: 25
       max_per_window: 2
       severity: medium
-    enabled: false   # blocked on alias system
+    enabled: false   # Blocked on email corpus (signup daemon building it)
 
   monitor-subscriptions:
     script: monitor_subscriptions.py
@@ -272,4 +265,4 @@ jobs:
       lookback_hours: 8
       max_per_window: 6
       severity: low
-    enabled: false   # blocked on alias system
+    enabled: false   # Blocked on email corpus
