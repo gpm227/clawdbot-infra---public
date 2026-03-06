@@ -196,7 +196,7 @@ def write_directives(write_conn, proposals: list[dict]):
             "weekly-proposals",
             p["message"],
             p["priority"],
-            "pending",
+            "proposed",
             f"rule: {p['rule_id']}",
         ))
     write_conn.commit()
