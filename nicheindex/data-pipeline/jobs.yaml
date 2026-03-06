@@ -184,6 +184,28 @@ jobs:
   # WEEKLY REPORTS
   # -----------------------------------------------------------------------
 
+  daily-health:
+    script: daily_health.py
+    location: bots
+    schedule:
+      - { hour: 7, minute: 0 }
+    monitoring:
+      lookback_hours: 25
+      max_per_window: 1
+      severity: medium
+    enabled: true
+
+  weekly-proposals:
+    script: weekly_proposals.py
+    location: bots
+    schedule:
+      - { day_of_week: "mon", hour: 7, minute: 15 }
+    monitoring:
+      lookback_hours: 168
+      max_per_window: 1
+      severity: low
+    enabled: true
+
   pipeline-digest:
     script: pipeline_digest.py
     location: bots
@@ -193,7 +215,7 @@ jobs:
       lookback_hours: 168
       max_per_window: 1
       severity: low
-    enabled: true
+    enabled: false   # Replaced by daily-health (daily 7am)
 
   product-intelligence:
     script: product_intelligence.py
@@ -266,3 +288,61 @@ jobs:
       max_per_window: 6
       severity: low
     enabled: false   # Blocked on email corpus
+
+# ---------------------------------------------------------------------------
+# Analytics config — thresholds and proposal rules for weekly-proposals
+# ---------------------------------------------------------------------------
+analytics_config:
+  thresholds:
+    icp1_green: 90
+    icp1_yellow: 70
+    icp2_green: 60
+    icp2_yellow: 40
+    icp3_green: 300
+    icp3_yellow: 100
+
+  proposal_rules:
+    - id: oom_pattern
+      query: >
+        SELECT count(*) AS cnt
+        FROM pipeline_runs
+        WHERE error_text LIKE '%OOM%'
+        AND started_at >= now() - interval '7 days'
+      condition: "cnt >= 2"
+      template: "Investigate OOM pattern — {cnt} kills this week"
+      priority: critical
+
+    - id: census_missed
+      query: >
+        SELECT count(*) AS cnt FROM pipeline_runs
+        WHERE job_name = 'daily-census' AND status = 'failed'
+        AND started_at >= now() - interval '24 hours'
+      condition: "cnt >= 1"
+      template: "Census failed {cnt}x in last 24h — snapshot gap"
+      priority: critical
+
+    - id: queue_low
+      query: >
+        SELECT count(*) AS cnt FROM subscription_queue
+        WHERE status IN ('pending', 'candidate')
+      condition: "cnt < 50"
+      template: "Queue running dry ({cnt} remaining). Feed next CSV batch."
+      priority: high
+
+    - id: crawler_cold
+      query: >
+        SELECT count(*) AS cnt FROM email_subscriptions
+        WHERE status = 'subscribed'
+        AND created_at >= now() - interval '7 days'
+      condition: "cnt < 5"
+      template: "Only {cnt} new signups this week. Check daemon + queue."
+      priority: high
+
+    - id: rss_stale
+      query: >
+        SELECT count(*) AS cnt FROM pipeline_runs
+        WHERE job_name = 'rss-pulse' AND status = 'completed'
+        AND started_at >= now() - interval '48 hours'
+      condition: "cnt == 0"
+      template: "RSS pulse hasn't completed in 48h. Health pills are stale."
+      priority: high

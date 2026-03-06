@@ -636,11 +636,6 @@ def format_discord_report(signals: list[dict], scorecard: dict,
     else:
         lines.append("**SIGNALS:** No significant signals this week. All systems nominal.\n")
 
-    # LLM narration
-    lines.append("**EXECUTIVE SUMMARY**")
-    lines.append(narration)
-    lines.append("")
-
     # Directives
     if directives:
         lines.append("**PROPOSED ACTIONS** (react with thumbs up/down)")
@@ -788,13 +783,12 @@ def main():
 
     ro_conn.close()
 
-    # LLM narration
-    narration = generate_narration(all_signals, scorecard, red_alerts)
-    print(f"  Narration: {len(narration)} chars")
+    # LLM narration removed — signals are self-explanatory
+    narration = None
 
-    # Generate directives (max 3 proposed, rest overflow)
-    directives, overflow = generate_directives(all_signals, scorecard, red_alerts)
-    print(f"  Directives: {len(directives)} proposed, {len(overflow)} overflow")
+    # Directive generation moved to weekly-proposals job
+    directives = []
+    overflow = []
 
     # Format and send
     report = format_discord_report(all_signals, scorecard, narration, directives, red_alerts)
@@ -805,8 +799,6 @@ def main():
     try:
         write_conn = get_write_conn()
         log_interaction(write_conn, all_signals, scorecard, narration, directives, red_alerts)
-        write_directives(write_conn, directives)
-        log_overflow_directives(write_conn, overflow)
     except Exception as e:
         print(f"WARNING: Persistence failed: {e}", file=sys.stderr)
     finally:
