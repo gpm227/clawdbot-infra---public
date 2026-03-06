@@ -226,15 +226,16 @@ def compute_crawler(cur):
     # Best and worst batch by success rate
     min_attempts = THRESHOLDS["min_batch_attempts"]
     cur.execute("""
-        SELECT sq.vertical AS batch,
+        SELECT sq.batch,
                count(*) AS attempts,
-               count(*) FILTER (WHERE es.status = 'subscribed') AS successes
+               count(*) FILTER (WHERE es.id IS NOT NULL) AS successes
         FROM subscription_queue sq
-        LEFT JOIN email_subscriptions es ON es.publication_id = sq.publication_id
-        WHERE sq.processed_at >= now() - interval '7 days'
-        GROUP BY sq.vertical
+        LEFT JOIN email_subscriptions es ON es.homepage_url ILIKE '%%' || sq.domain || '%%'
+            AND es.status = 'subscribed'
+        WHERE sq.batch IS NOT NULL
+        GROUP BY sq.batch
         HAVING count(*) >= %s
-        ORDER BY count(*) FILTER (WHERE es.status = 'subscribed')::float / count(*) DESC
+        ORDER BY count(*) FILTER (WHERE es.id IS NOT NULL)::float / count(*) DESC
     """, (min_attempts,))
     batches = cur.fetchall()
 
