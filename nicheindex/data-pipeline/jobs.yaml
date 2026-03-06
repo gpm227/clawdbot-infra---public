@@ -289,6 +289,21 @@ jobs:
       severity: low
     enabled: false   # Blocked on email corpus
 
+
+  newsletter-discovery-ads:
+    script: newsletter_discovery_ads.py
+    location: pipeline
+    # ICP 3 corpus expansion — discover ad-supported newsletters.
+    # Channels: paved category pages, directories, sponsor-page detection.
+    # Weekly is enough — discovery sources update slowly.
+    schedule:
+      - { day_of_week: "sun", hour: 5, minute: 0 }
+    monitoring:
+      lookback_hours: 168
+      max_per_window: 1
+      severity: low
+    enabled: true
+
 # ---------------------------------------------------------------------------
 # Analytics config — thresholds and proposal rules for weekly-proposals
 # ---------------------------------------------------------------------------
@@ -346,3 +361,4 @@ analytics_config:
       condition: "cnt == 0"
       template: "RSS pulse hasn't completed in 48h. Health pills are stale."
       priority: high
+
