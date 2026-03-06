@@ -22,6 +22,11 @@ from pathlib import Path
 
 import psycopg2
 import psycopg2.extras
+try:
+    from data_qa_autofix import execute_auto_fixes, filter_duplicate_recommendations
+except ImportError:
+    execute_auto_fixes = None
+    filter_duplicate_recommendations = None
 import yaml
 
 # ---------------------------------------------------------------------------
@@ -450,7 +455,24 @@ def main():
 
     ro_conn.close()
 
+    # Auto-fix operational issues
+    auto_fix_actions = []
+    if execute_auto_fixes:
+        try:
+            fix_conn = get_write_conn()
+            auto_fix_actions = execute_auto_fixes(ro_conn, fix_conn)
+            if auto_fix_actions:
+                print(f"Auto-fixes applied: {len(auto_fix_actions)}")
+            # Filter duplicate recommendations
+            if filter_duplicate_recommendations and recommendations:
+                recommendations = filter_duplicate_recommendations(fix_conn, recommendations)
+            fix_conn.close()
+        except Exception as e:
+            print(f"WARNING: Auto-fix failed: {e}", file=sys.stderr)
+
     report = format_discord_report(receipts, freshness, target_results, recommendations)
+    if auto_fix_actions:
+        report += "\n\n**AUTO-FIXES APPLIED**\n" + "\n".join(f"  {a}" for a in auto_fix_actions)
     send_discord(report)
 
     try:

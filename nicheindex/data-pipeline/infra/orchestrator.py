@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -156,6 +156,76 @@ def run_chain(cfg: dict, parent: str):
         time.sleep(5)  # brief pause between jobs
 
 
+def check_and_resume_chain(cfg: dict):
+    """On startup, resume any interrupted chain.
+
+    Looks at the most recent completed daily-census. If chain jobs
+    haven't all run since that completion, resume from where it stopped.
+    Only resumes if the census completed within the last 6 hours
+    (avoids re-running stale chains from days ago).
+    """
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        print("[orchestrator] No DATABASE_URL — skipping chain resume check")
+        return
+
+    tz = cfg["_tz"]
+    chain = get_chain_jobs(cfg, "daily-census")
+    if not chain:
+        return
+
+    try:
+        with psycopg2.connect(dsn) as conn:
+            with conn.cursor() as cur:
+                # Find most recent completed daily-census within last 6 hours
+                cutoff = datetime.now(tz) - timedelta(hours=6)
+                cur.execute("""
+                    SELECT started_at FROM pipeline_runs
+                    WHERE job_name = 'daily-census' AND status = 'completed'
+                      AND started_at > %s
+                    ORDER BY started_at DESC LIMIT 1
+                """, (cutoff,))
+                row = cur.fetchone()
+                if not row:
+                    print("[orchestrator] No recent census — nothing to resume")
+                    return
+
+                census_time = row[0]
+                print(f"[orchestrator] Last census completed at {census_time}")
+
+                # Check which chain jobs ran after that census
+                ran_jobs = set()
+                for job_name, _ in chain:
+                    cur.execute("""
+                        SELECT status FROM pipeline_runs
+                        WHERE job_name = %s AND started_at > %s
+                        ORDER BY started_at DESC LIMIT 1
+                    """, (job_name, census_time))
+                    result = cur.fetchone()
+                    if result and result[0] in ('completed', 'failed', 'skipped'):
+                        ran_jobs.add(job_name)
+
+        # Find jobs that didn't run
+        remaining = [(name, spec) for name, spec in chain if name not in ran_jobs]
+        if not remaining:
+            print("[orchestrator] Chain fully completed after last census — nothing to resume")
+            return
+
+        already_ran = [name for name, _ in chain if name in ran_jobs]
+        to_run = [name for name, _ in remaining]
+        print(f"[orchestrator] Chain incomplete. Ran: {already_ran}")
+        print(f"[orchestrator] Resuming: {' -> '.join(to_run)}")
+
+        for job_name, _ in remaining:
+            run_with_retry(cfg, job_name)
+            time.sleep(5)
+
+        print("[orchestrator] Chain resume complete")
+
+    except Exception as e:
+        print(f"[orchestrator] Chain resume check failed: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Schedule builder
 # ---------------------------------------------------------------------------
@@ -273,7 +343,9 @@ def main():
         run_with_retry(cfg, job_name)
         return
 
-    # Daemon mode
+    # Daemon mode — check for interrupted chain before starting scheduler
+    check_and_resume_chain(cfg)
+
     scheduler = build_schedule(cfg)
     print(f"[orchestrator] Scheduler running. Denver time: {datetime.now(tz).strftime('%H:%M %Z')}")
     print(f"[orchestrator] Loaded {len(get_enabled_jobs(cfg))} enabled jobs from jobs.yaml")
