@@ -43,14 +43,14 @@ TARGETS_FILE = DATA_DIR / "data_targets.yaml"
 # Mapping: job_name -> [(target_table, count_column, date_column)]
 JOB_TARGET_MAP = {
     "daily-census": [
-        ("publications", "id", "updated_at"),
-        ("publication_snapshots", "id", "created_at"),
+        ("publications", "id", "last_updated_at"),
+        ("publication_snapshots", "id", "snapshot_date"),
     ],
     "archive-crawl": [
-        ("publication_activity", "id", "updated_at"),
+        ("publication_activity", "id", "created_at"),
     ],
     "bulk-archive-crawl": [
-        ("publication_activity", "id", "updated_at"),
+        ("publication_activity", "id", "created_at"),
     ],
     "niche-trends": [
         ("niche_trends", "id", "computed_at"),
@@ -64,11 +64,11 @@ JOB_TARGET_MAP = {
 }
 
 FRESHNESS_TABLES = [
-    ("publications", "updated_at", 48),
-    ("publication_snapshots", "created_at", 48),
-    ("publication_activity", "updated_at", 72),
+    ("publications", "last_updated_at", 48),
+    ("publication_snapshots", "snapshot_date", 48),
+    ("publication_activity", "created_at", 72),
     ("niche_trends", "computed_at", 48),
-    ("niche_scores", "computed_at", 168),
+    ("niche_scores", "updated_at", 168),
     ("subscription_queue", "discovered_at", 72),
 ]
 
@@ -134,6 +134,7 @@ def check_receipts_vs_reality(ro_conn) -> list[dict]:
                     "completed_at": run["completed_at"].isoformat(),
                 })
             except Exception as e:
+                ro_conn.rollback()
                 results.append({
                     "job_name": job,
                     "table": table,
@@ -172,6 +173,7 @@ def check_freshness(ro_conn) -> list[dict]:
             else:
                 results.append({"table": table, "newest": None, "passed": False})
         except Exception as e:
+            ro_conn.rollback()
             results.append({"table": table, "error": str(e), "passed": False})
 
     return results
@@ -250,6 +252,7 @@ def measure_targets(ro_conn) -> list[dict]:
                     })
 
             except Exception as e:
+                ro_conn.rollback()
                 results.append({
                     "lens": lens_name,
                     "check": check_name,
@@ -405,7 +408,7 @@ def log_interaction(write_conn, observation: dict):
         cur.execute("""
             INSERT INTO bot_interactions (bot_name, interaction_type, observation)
             VALUES ('data-qa', 'observation', %s)
-        """, (json.dumps(observation),))
+        """, (json.dumps(observation, default=str),))
         write_conn.commit()
     except Exception as e:
         print(f"WARNING: Failed to log interaction: {e}", file=sys.stderr)
@@ -453,9 +456,7 @@ def main():
     recommendations = generate_recommendations(target_results)
     print(f"Recommendations: {len(recommendations)}")
 
-    ro_conn.close()
-
-    # Auto-fix operational issues
+    # Auto-fix operational issues (must happen before ro_conn.close())
     auto_fix_actions = []
     if execute_auto_fixes:
         try:
@@ -469,6 +470,8 @@ def main():
             fix_conn.close()
         except Exception as e:
             print(f"WARNING: Auto-fix failed: {e}", file=sys.stderr)
+
+    ro_conn.close()
 
     report = format_discord_report(receipts, freshness, target_results, recommendations)
     if auto_fix_actions:

@@ -99,16 +99,17 @@ content_quality:
     severity: medium
 
   rss_reliability:
-    metric: "RSS feed parse success rate"
+    metric: "Pubs with RSS checked in last 14 days"
     query: >
-      SELECT count(*) AS actual
-      FROM publications
-      WHERE is_inactive != true AND rss_url IS NOT NULL
-        AND rss_url != ''
+      SELECT count(DISTINCT pa.publication_id) AS actual
+      FROM publication_activity pa
+      JOIN publications p ON p.id = pa.publication_id
+      WHERE p.is_inactive != true
+        AND pa.rss_last_checked >= now() - interval '14 days'
     target_pct: 85
     denominator_query: >
       SELECT count(*) FROM publications WHERE is_inactive != true
-    note: "Proxy: pubs with RSS URL. True measure needs RSS pulse logs."
+    note: "Proxy: pubs rss_last_checked in last 14d. True RSS coverage via rss-pulse."
     severity: high
 
   ad_ratio_coverage:
@@ -150,7 +151,7 @@ pipeline_health:
   snapshot_depth:
     metric: "Days of snapshot history"
     query: >
-      SELECT extract(day from (max(snapshot_date) - min(snapshot_date))) AS actual
+      SELECT (max(snapshot_date) - min(snapshot_date)) AS actual
       FROM publication_snapshots
     target: 22
     week2_target: 29
