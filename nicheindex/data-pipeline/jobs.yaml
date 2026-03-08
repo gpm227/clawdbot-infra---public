@@ -178,6 +178,7 @@ jobs:
       severity: low
     enabled: true
 
+  # DISABLED 2026-03: Substack publication/search endpoint returns empty results for all queries
   search-crawl:
     script: search_crawl.py
     location: pipeline
@@ -189,7 +190,7 @@ jobs:
       lookback_hours: 96
       max_per_window: 2
       severity: low
-    enabled: true
+    enabled: false
 
   # -----------------------------------------------------------------------
   # WEEKLY REPORTS
@@ -318,6 +319,39 @@ jobs:
 # ---------------------------------------------------------------------------
 # Analytics config — thresholds and proposal rules for weekly-proposals
 # ---------------------------------------------------------------------------
+
+  # -----------------------------------------------------------------------
+  # SPONSOR INTELLIGENCE — daily RSS deep scan for ICP 3
+  # Runs after rss-pulse (20:30 Denver, ~90 min) completes.
+  # sponsor-scan → normalize-brands (chained)
+  # -----------------------------------------------------------------------
+
+  sponsor-scan:
+    script: sponsor_scan.py
+    location: pipeline
+    # Deep RSS content:encoded parsing for sponsor blocks across all non-Substack pubs.
+    # Idempotent: unique index on (publication_id, post_url, brand_domain) prevents dupes.
+    schedule:
+      - { hour: 22, minute: 30 }
+    monitoring:
+      lookback_hours: 26
+      max_per_window: 1
+      severity: medium
+    enabled: true
+
+  normalize-brands:
+    script: tools/normalize_brands.py
+    location: pipeline
+    # Cleans raw brand_domain → human-readable brand_name. Deletes false positives.
+    # Idempotent. Runs after sponsor-scan to clean new observations.
+    chain_after: sponsor-scan
+    chain_order: 1
+    monitoring:
+      lookback_hours: 26
+      max_per_window: 1
+      severity: low
+    enabled: true
+
 analytics_config:
   thresholds:
     icp1_green: 90
@@ -373,3 +407,7 @@ analytics_config:
       template: "RSS pulse hasn't completed in 48h. Health pills are stale."
       priority: high
 
+
+  # -----------------------------------------------------------------------
+  # SPONSOR INTELLIGENCE — daily RSS deep scan for ICP 3
+  # Runs after rss-pulse (20:30 Denver, ~90 min) completes.
