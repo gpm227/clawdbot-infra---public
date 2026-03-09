@@ -6,7 +6,7 @@ Posts decision-readiness coverage, ICP 3 pipeline velocity, and gap analysis.
 Measures what % of the index can deliver the aha moment for each ICP:
   ICP 1: "Can a reader find a good newsletter right now?"
   ICP 2: "Can a creator get competitive intelligence worth $59?"
-  ICP 3: "Are we on track for 500 email subs by June?"
+  ICP 3: "Is sponsor intelligence growing from RSS harvest?"
 
 Uses SUPABASE_READONLY_DB_URL for reads, DATABASE_URL for bot_interactions writes.
 """
@@ -28,7 +28,7 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_DIGEST", os.environ.get("DISCO
 TARGETS = {
     "icp1_pct": 90,
     "icp2_pct": 75,
-    "icp3_pubs": 200,
+    "icp3_pubs": 1000,
 }
 
 
@@ -98,20 +98,35 @@ def compute_pipeline(cur):
     """)
     metrics["completed"] = cur.fetchone()["completed"] or 0
 
-    # Check derived-metrics staleness
+    # Check ni-harvest staleness
     cur.execute("""
-        SELECT started_at FROM pipeline_runs
-        WHERE job_name = 'derived-metrics' AND status = 'completed'
-        ORDER BY started_at DESC LIMIT 1
+        SELECT completed_at FROM pipeline_runs
+        WHERE job_name = 'ni-harvest' AND status = 'completed'
+        ORDER BY completed_at DESC LIMIT 1
     """)
     row = cur.fetchone()
     if row:
-        metrics["derived_metrics_last"] = row["started_at"]
-        cur.execute("SELECT %s < now() - interval '26 hours' AS stale", (row["started_at"],))
-        metrics["derived_metrics_stale"] = cur.fetchone()["stale"]
+        metrics["ni_harvest_last"] = row["completed_at"]
+        cur.execute("SELECT %s < now() - interval '26 hours' AS stale", (row["completed_at"],))
+        metrics["ni_harvest_stale"] = cur.fetchone()["stale"]
     else:
-        metrics["derived_metrics_last"] = None
-        metrics["derived_metrics_stale"] = True
+        metrics["ni_harvest_last"] = None
+        metrics["ni_harvest_stale"] = True
+
+    # Check ni-refine staleness
+    cur.execute("""
+        SELECT completed_at FROM pipeline_runs
+        WHERE job_name = 'ni-refine' AND status = 'completed'
+        ORDER BY completed_at DESC LIMIT 1
+    """)
+    row = cur.fetchone()
+    if row:
+        metrics["ni_refine_last"] = row["completed_at"]
+        cur.execute("SELECT %s < now() - interval '26 hours' AS stale", (row["completed_at"],))
+        metrics["ni_refine_stale"] = cur.fetchone()["stale"]
+    else:
+        metrics["ni_refine_last"] = None
+        metrics["ni_refine_stale"] = True
 
     metrics["light"] = traffic_light(
         metrics["failure_count"], 0, 2, higher_is_better=False
@@ -245,81 +260,61 @@ def compute_icp2(cur):
 
 
 def compute_icp3(cur):
-    """ICP 3 Sponsor Intel Ready — pubs with defensible ad intelligence."""
-    # Pubs with ads_ratio detected
+    """ICP 3 Sponsor Intel Ready — sponsor intelligence from RSS harvest."""
+    # Total sponsor observations (excluding FPs)
     cur.execute("""
-        SELECT count(*) AS ads_detected
-        FROM publications
-        WHERE is_inactive != true AND ni_ads_ratio IS NOT NULL
+        SELECT count(*) AS total_obs
+        FROM sponsor_observations
+        WHERE is_false_positive != true
     """)
-    ads_detected = cur.fetchone()["ads_detected"]
+    total_obs = cur.fetchone()["total_obs"]
 
-    # Active email subscriptions
+    # Unique brands
     cur.execute("""
-        SELECT count(*) AS active_subs
-        FROM email_subscriptions
-        WHERE status = 'subscribed'
+        SELECT count(DISTINCT brand_name) AS unique_brands
+        FROM sponsor_observations
+        WHERE is_false_positive != true AND brand_name IS NOT NULL
     """)
-    active_subs = cur.fetchone()["active_subs"]
+    unique_brands = cur.fetchone()["unique_brands"]
 
-    # Pubs with both ads_ratio AND active email subscription
+    # Pubs with sponsor data
     cur.execute("""
-        SELECT count(DISTINCT p.id) AS full_ready
-        FROM publications p
-        JOIN email_subscriptions es ON es.homepage_url ILIKE '%' || p.subdomain || '%'
-            AND es.status = 'subscribed'
-        WHERE p.is_inactive != true
-            AND p.ni_ads_ratio IS NOT NULL
+        SELECT count(DISTINCT publication_id) AS pubs_with_sponsors
+        FROM sponsor_observations
+        WHERE is_false_positive != true
     """)
-    full_ready = cur.fetchone()["full_ready"]
+    pubs_with_sponsors = cur.fetchone()["pubs_with_sponsors"]
 
-    # Queue depth
+    # sponsor_summary rows
+    cur.execute("SELECT count(*) AS summary_rows FROM sponsor_summary")
+    summary_rows = cur.fetchone()["summary_rows"]
+
+    # Categories with sponsor data
     cur.execute("""
-        SELECT
-            count(*) FILTER (WHERE status = 'pending') AS pending,
-            count(*) FILTER (WHERE status = 'candidate') AS candidates
-        FROM subscription_queue
+        SELECT count(DISTINCT category_name) AS categories
+        FROM sponsor_summary
     """)
-    queue = cur.fetchone()
+    categories_covered = cur.fetchone()["categories"]
 
-    # Signup velocity (14-day rolling)
+    # ni-harvest latest cycle
     cur.execute("""
-        SELECT
-            count(*) AS attempts,
-            count(*) FILTER (WHERE status = 'subscribed') AS successes
-        FROM email_subscriptions
-        WHERE created_at >= now() - interval '14 days'
+        SELECT records_processed, records_written, duration_seconds,
+               metadata->>'sponsor_observations' AS cycle_obs,
+               completed_at
+        FROM pipeline_runs
+        WHERE job_name = 'ni-harvest' AND status = 'completed'
+        ORDER BY completed_at DESC LIMIT 1
     """)
-    signups_14d = cur.fetchone()
-    attempts_14d = signups_14d["attempts"] or 0
-    successes_14d = signups_14d["successes"] or 0
-    rate_14d = round(successes_14d / attempts_14d * 100) if attempts_14d > 0 else 0
-
-    # Inbound emails (7d)
-    cur.execute("""
-        SELECT count(*) AS cnt
-        FROM inbound_emails
-        WHERE created_at >= now() - interval '7 days'
-    """)
-    inbound_7d = cur.fetchone()["cnt"]
-
-    # Weeks to 500 projection
-    weekly_rate = successes_14d / 2.0 if successes_14d > 0 else 0
-    remaining = max(500 - active_subs, 0)
-    weeks_to_500 = round(remaining / weekly_rate) if weekly_rate > 0 else None
+    harvest_latest = cur.fetchone()
 
     return {
-        "ads_detected": ads_detected,
-        "active_subs": active_subs,
-        "full_ready": full_ready,
-        "light": traffic_light(full_ready, TARGETS["icp3_pubs"], TARGETS["icp3_pubs"] // 4),
-        "queue_pending": queue["pending"],
-        "queue_candidates": queue["candidates"],
-        "attempts_14d": attempts_14d,
-        "successes_14d": successes_14d,
-        "rate_14d": rate_14d,
-        "inbound_7d": inbound_7d,
-        "weeks_to_500": weeks_to_500,
+        "total_obs": total_obs,
+        "unique_brands": unique_brands,
+        "pubs_with_sponsors": pubs_with_sponsors,
+        "summary_rows": summary_rows,
+        "categories_covered": categories_covered,
+        "harvest_latest": harvest_latest,
+        "light": traffic_light(pubs_with_sponsors, 500, 100),
     }
 
 
@@ -356,25 +351,13 @@ def compute_gaps(icp1, icp2, icp3):
                 "field": field,
             })
 
-    # ICP 3 gaps (different — these are pipeline blockers, not per-pub fields)
-    if icp3["active_subs"] < 500:
+    # ICP 3 gaps
+    if icp3["pubs_with_sponsors"] < 1000:
         gaps.append({
             "icp": "ICP 3",
-            "description": f'Email corpus: {icp3["active_subs"]}/500 subs'
-                           f' ({icp3["weeks_to_500"]}w at current rate)'
-                           if icp3["weeks_to_500"]
-                           else f'Email corpus: {icp3["active_subs"]}/500 subs (rate too low to project)',
-            "impact_pct": 100 - round(icp3["active_subs"] / 500 * 100, 1),
-            "field": "email_corpus",
-        })
-
-    queue_total = icp3["queue_pending"] + icp3["queue_candidates"]
-    if queue_total < 100:
-        gaps.append({
-            "icp": "ICP 3",
-            "description": f'Queue low: {queue_total} remaining. Needs CSV import.',
-            "impact_pct": 80,
-            "field": "queue_depth",
+            "description": f'Sponsor coverage: {icp3["pubs_with_sponsors"]}/1000 pubs with sponsor data',
+            "impact_pct": 100 - round(icp3["pubs_with_sponsors"] / 1000 * 100, 1),
+            "field": "sponsor_coverage",
         })
 
     # Sort by impact, take top 3
@@ -399,11 +382,16 @@ def format_digest(pipeline, icp1, icp2, icp3, gaps):
             for f in pipeline["failures"][:3]:
                 err = f" -- {f['error']}" if f["error"] else ""
                 lines.append(f"  FAIL: {f['job']}{err}")
-        if pipeline.get("derived_metrics_stale"):
-            if pipeline.get("derived_metrics_last"):
-                lines.append(f"  ** Derived metrics stale (last: {pipeline['derived_metrics_last']})")
+        if pipeline.get("ni_harvest_stale"):
+            if pipeline.get("ni_harvest_last"):
+                lines.append(f"  ** ni-harvest stale (last: {pipeline['ni_harvest_last']})")
             else:
-                lines.append(f"  ** Derived metrics never run")
+                lines.append(f"  ** ni-harvest never completed")
+        if pipeline.get("ni_refine_stale"):
+            if pipeline.get("ni_refine_last"):
+                lines.append(f"  ** ni-refine stale (last: {pipeline['ni_refine_last']})")
+            else:
+                lines.append(f"  ** ni-refine never completed")
     else:
         lines.append("**PIPELINE** -- query failed")
 
@@ -423,21 +411,24 @@ def format_digest(pipeline, icp1, icp2, icp3, gaps):
 
     if icp3:
         target = TARGETS["icp3_pubs"]
-        bar = progress_bar(min(icp3["full_ready"] / max(target, 1), 1.0))
-        lines.append(f"  ICP 3 (Sponsor):      {icp3['full_ready']} pubs ready {bar}  target: {target}")
+        bar = progress_bar(min(icp3["pubs_with_sponsors"] / max(target, 1), 1.0))
+        lines.append(f"  ICP 3 (Sponsors):     {icp3['pubs_with_sponsors']} pubs {bar}  target: {target}")
 
-    # ICP 3 Pipeline
+    # ICP 3 Sponsor Intel
     if icp3:
         lines.append("")
-        lines.append("**ICP 3 PIPELINE**")
-        lines.append(f"  Queue: {icp3['queue_pending']} pending / {icp3['queue_candidates']} candidate")
-        lines.append(f"  Signups (14d): {icp3['successes_14d']}/{icp3['attempts_14d']} ({icp3['rate_14d']}%)")
-        lines.append(f"  Inbound emails (7d): {icp3['inbound_7d']}")
-        lines.append(f"  Ads detected on: {icp3['ads_detected']} pubs")
-        if icp3["weeks_to_500"]:
-            lines.append(f"  At current rate: ~{icp3['weeks_to_500']} weeks to 500 subs")
+        lines.append("**ICP 3 SPONSOR INTEL**")
+        lines.append(f"  Observations: {icp3['total_obs']:,} ({icp3['unique_brands']} brands, {icp3['pubs_with_sponsors']} pubs)")
+        lines.append(f"  Summary table: {icp3['summary_rows']} rows across {icp3['categories_covered']} categories")
+        harvest = icp3.get("harvest_latest")
+        if harvest and harvest.get("completed_at"):
+            ago = datetime.now(timezone.utc) - harvest["completed_at"].replace(tzinfo=timezone.utc) if harvest["completed_at"].tzinfo is None else datetime.now(timezone.utc) - harvest["completed_at"]
+            hours_ago = round(ago.total_seconds() / 3600, 1)
+            pubs = harvest.get("records_processed") or "?"
+            obs = harvest.get("cycle_obs") or harvest.get("records_written") or "?"
+            lines.append(f"  Last harvest: {hours_ago}h ago -- {pubs} pubs, {obs} obs")
         else:
-            lines.append(f"  At current rate: too slow to project")
+            lines.append(f"  Last harvest: no completed runs")
 
     # Gaps
     if gaps:
