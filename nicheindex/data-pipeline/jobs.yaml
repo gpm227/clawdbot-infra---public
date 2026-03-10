@@ -1,67 +1,48 @@
-# jobs.yaml — Single source of truth for all NicheIndex pipeline jobs
-# Schedule philosophy: efficient runs that bring new data or fresh signal.
-# No redundant crawls. Frequency matches how fast the underlying data changes.
-
 project: nicheindex
 timezone: America/Denver
-
 pipeline_dir: ../../../nicheindex/pipeline
 bots_dir: ./bots
-
 jobs:
-
-  # -----------------------------------------------------------------------
-  # HIGH PRIORITY — new data acquisition + core freshness
-  # -----------------------------------------------------------------------
-
-  # email-signup-daemon runs as separate systemd service (24/7, every 8min)
-  # — not managed by orchestrator, but listed here for documentation
-
   newsletter-discovery:
     script: newsletter_discovery.py
     location: bots
-    # Queue feeds the signup daemon (~180/day consumption).
-    # Sources update slowly (Ghost Explore, InboxReads) — 2x/day is sufficient.
-    # TODO: add queue-depth trigger (extra run if queue < 300)
     schedule:
-      - { hour: 6, minute: 0 }
-      - { hour: 18, minute: 0 }
+    - hour: 6
+      minute: 0
+    - hour: 18
+      minute: 0
     monitoring:
       lookback_hours: 25
       max_per_window: 2
       severity: high
-    enabled: true
-
+    enabled: false
   rss-pulse:
     script: rss_pulse.py
     location: pipeline
-    # RSS feeds change constantly — 2x/day powers health pills in the product.
     schedule:
-      - { hour: 8, minute: 0 }
-      - { hour: 20, minute: 30 }
+    - hour: 8
+      minute: 0
+    - hour: 20
+      minute: 30
     monitoring:
       lookback_hours: 25
       max_per_window: 2
       severity: high
-    enabled: true
-
+    enabled: false
   daily-census:
     script: crawl.py
     location: pipeline
-    # Subscriber count snapshots — must run daily for growth tracking.
     schedule:
-      - { hour: 20, minute: 0 }
+    - hour: 20
+      minute: 0
     monitoring:
       lookback_hours: 26
       max_per_window: 1
       severity: high
-      window: ["20:00", "22:00"]
+      window:
+      - '20:00'
+      - '22:00'
     enabled: true
-
-  # -----------------------------------------------------------------------
-  # MEDIUM PRIORITY — post-census chain (sequential after census)
-  # -----------------------------------------------------------------------
-
   niche-trends:
     script: deltas.py
     location: pipeline
@@ -71,8 +52,7 @@ jobs:
       lookback_hours: 26
       max_per_window: 1
       severity: medium
-    enabled: true
-
+    enabled: false
   publication-intake:
     script: publication_intake.py
     location: pipeline
@@ -82,8 +62,7 @@ jobs:
       lookback_hours: 48
       max_per_window: 2
       severity: low
-    enabled: true
-
+    enabled: false
   growth-delta:
     script: growth_delta.py
     location: pipeline
@@ -94,7 +73,6 @@ jobs:
       max_per_window: 1
       severity: medium
     enabled: true
-
   inactive-detector:
     script: inactive_detector.py
     location: pipeline
@@ -105,7 +83,6 @@ jobs:
       max_per_window: 1
       severity: medium
     enabled: true
-
   new-entrant-detector:
     script: new_entrant_detector.py
     location: pipeline
@@ -116,7 +93,6 @@ jobs:
       max_per_window: 1
       severity: medium
     enabled: true
-
   auto-rater:
     script: auto_rater.py
     location: pipeline
@@ -126,8 +102,7 @@ jobs:
       lookback_hours: 26
       max_per_window: 1
       severity: medium
-    enabled: true
-
+    enabled: false
   data-qa:
     script: data_qa.py
     location: bots
@@ -137,8 +112,7 @@ jobs:
       lookback_hours: 26
       max_per_window: 1
       severity: medium
-    enabled: true
-
+    enabled: false
   rising-scorer:
     script: rising_scorer.py
     location: pipeline
@@ -148,8 +122,7 @@ jobs:
       lookback_hours: 26
       max_per_window: 1
       severity: medium
-    enabled: true
-
+    enabled: false
   derived-metrics:
     script: derived_metrics.py
     location: pipeline
@@ -160,190 +133,163 @@ jobs:
       max_per_window: 1
       severity: medium
     enabled: true
-
-  # -----------------------------------------------------------------------
-  # BEHAVIORAL SIGNALS — archive + discovery crawls
-  # -----------------------------------------------------------------------
-
   archive-crawl:
     script: crawl_archives.py
     location: pipeline
-    # Post frequency, engagement, word count. Most pubs post weekly/monthly,
-    # so 3x/week captures changes without redundant crawling.
     schedule:
-      - { day_of_week: "mon,wed,fri", hour: 2, minute: 0 }
+    - day_of_week: mon,wed,fri
+      hour: 2
+      minute: 0
     monitoring:
       lookback_hours: 72
       max_per_window: 3
       severity: low
-    enabled: true
-
-  # DISABLED 2026-03: Substack publication/search endpoint returns empty results for all queries
+    enabled: false
   search-crawl:
     script: search_crawl.py
     location: pipeline
-    # Finds pubs beyond the 525/category browse cap.
-    # Substack search index updates slowly — 2x/week is enough.
     schedule:
-      - { day_of_week: "tue,sat", hour: 4, minute: 0 }
+    - day_of_week: tue,sat
+      hour: 4
+      minute: 0
     monitoring:
       lookback_hours: 96
       max_per_window: 2
       severity: low
     enabled: false
-
-  # -----------------------------------------------------------------------
-  # WEEKLY REPORTS
-  # -----------------------------------------------------------------------
-
   daily-health:
     script: daily_health.py
     location: bots
     schedule:
-      - { hour: 7, minute: 0 }
+    - hour: 7
+      minute: 0
     monitoring:
       lookback_hours: 25
       max_per_window: 1
       severity: medium
     enabled: true
-
   weekly-proposals:
     script: weekly_proposals.py
     location: bots
     schedule:
-      - { day_of_week: "mon", hour: 7, minute: 15 }
+    - day_of_week: mon
+      hour: 7
+      minute: 15
     monitoring:
       lookback_hours: 168
       max_per_window: 1
       severity: low
     enabled: true
-
   pipeline-digest:
     script: pipeline_digest.py
     location: bots
     schedule:
-      - { day_of_week: "mon", hour: 9, minute: 0 }
+    - day_of_week: mon
+      hour: 9
+      minute: 0
     monitoring:
       lookback_hours: 168
       max_per_window: 1
       severity: low
-    enabled: false   # Replaced by daily-health (daily 7am)
-
+    enabled: false
   product-intelligence:
     script: product_intelligence.py
     location: bots
-    # Moved from 8pm to 6pm to avoid collision with daily-census at 8pm.
     schedule:
-      - { day_of_week: "sun", hour: 18, minute: 0 }
+    - day_of_week: sun
+      hour: 18
+      minute: 0
     monitoring:
       lookback_hours: 168
       max_per_window: 1
       severity: low
-    enabled: true
-
-  # -----------------------------------------------------------------------
-  # DISABLED — replaced or not yet built
-  # -----------------------------------------------------------------------
-
+    enabled: false
   bulk-archive-crawl:
     script: bulk_archive_crawl.py
     location: pipeline
     schedule:
-      - { day_of_week: "wed,sat", hour: 3, minute: 0 }
+    - day_of_week: wed,sat
+      hour: 3
+      minute: 0
     monitoring:
       lookback_hours: 72
       max_per_window: 1
       severity: low
-    enabled: false   # Consolidated into archive-crawl (3x/week)
-
+    enabled: false
   sponsor-collector:
     script: sponsor_collector.py
     location: pipeline
     schedule:
-      - { day_of_week: "mon,thu", hour: 10, minute: 0 }
+    - day_of_week: mon,thu
+      hour: 10
+      minute: 0
     monitoring:
       lookback_hours: 48
       max_per_window: 2
       severity: low
-    enabled: false   # Replaced by email-signup-daemon (systemd, 24/7)
-
+    enabled: false
   media-kit-collector:
     script: media_kit_collector.py
     location: bots
     schedule:
-      - { day_of_week: "sun", hour: 18, minute: 0 }
+    - day_of_week: sun
+      hour: 18
+      minute: 0
     monitoring:
       lookback_hours: 168
       max_per_window: 1
       severity: low
-    enabled: false   # Not yet built
-
+    enabled: false
   inbox-scorer:
     script: inbox_scorer.py
     location: bots
     schedule:
-      - { hour: 9, minute: 0 }
-      - { hour: 21, minute: 0 }
+    - hour: 9
+      minute: 0
+    - hour: 21
+      minute: 0
     monitoring:
       lookback_hours: 25
       max_per_window: 2
       severity: medium
-    enabled: false   # Blocked on email corpus (signup daemon building it)
-
+    enabled: false
   monitor-subscriptions:
     script: monitor_subscriptions.py
     location: pipeline
     schedule:
-      - { hour: "*/4", minute: 0 }
+    - hour: '*/4'
+      minute: 0
     monitoring:
       lookback_hours: 8
       max_per_window: 6
       severity: low
-    enabled: false   # Blocked on email corpus
-
-
+    enabled: false
   newsletter-discovery-ads:
     script: newsletter_discovery_ads.py
     location: pipeline
-    # ICP 3 corpus expansion — discover ad-supported newsletters.
-    # Channels: paved category pages, directories, sponsor-page detection.
-    # Weekly is enough — discovery sources update slowly.
     schedule:
-      - { day_of_week: "sun", hour: 5, minute: 0 }
+    - day_of_week: sun
+      hour: 5
+      minute: 0
     monitoring:
       lookback_hours: 168
       max_per_window: 1
       severity: low
-    enabled: true
-
-# ---------------------------------------------------------------------------
-# Analytics config — thresholds and proposal rules for weekly-proposals
-# ---------------------------------------------------------------------------
-
-  # -----------------------------------------------------------------------
-  # SPONSOR INTELLIGENCE — daily RSS deep scan for ICP 3
-  # Runs after rss-pulse (20:30 Denver, ~90 min) completes.
-  # sponsor-scan → normalize-brands (chained)
-  # -----------------------------------------------------------------------
-
+    enabled: false
   sponsor-scan:
     script: sponsor_scan.py
     location: pipeline
-    # Deep RSS content:encoded parsing for sponsor blocks across all non-Substack pubs.
-    # Idempotent: unique index on (publication_id, post_url, brand_domain) prevents dupes.
     schedule:
-      - { hour: 22, minute: 30 }
+    - hour: 22
+      minute: 30
     monitoring:
       lookback_hours: 26
       max_per_window: 1
       severity: medium
     enabled: true
-
   normalize-brands:
     script: tools/normalize_brands.py
     location: pipeline
-    # Cleans raw brand_domain → human-readable brand_name. Deletes false positives.
-    # Idempotent. Runs after sponsor-scan to clean new observations.
     chain_after: sponsor-scan
     chain_order: 1
     monitoring:
@@ -351,7 +297,33 @@ jobs:
       max_per_window: 1
       severity: low
     enabled: true
-
+  ni-harvest:
+    script: ni_harvest.py
+    location: pipeline
+    monitoring:
+      lookback_hours: 48
+      max_per_window: 1
+      severity: medium
+    enabled: true
+  ni-refine:
+    script: ni_refine.py
+    location: pipeline
+    schedule:
+    - hour: 6
+      minute: 0
+    monitoring:
+      lookback_hours: 26
+      max_per_window: 1
+      severity: high
+    enabled: true
+  compute-sponsor-summary:
+    script: tools/compute_sponsor_summary.py
+    location: pipeline
+    monitoring:
+      lookback_hours: 26
+      max_per_window: 1
+      severity: low
+    enabled: true
 analytics_config:
   thresholds:
     icp1_green: 90
@@ -360,54 +332,44 @@ analytics_config:
     icp2_yellow: 40
     icp3_green: 300
     icp3_yellow: 100
-
   proposal_rules:
-    - id: oom_pattern
-      query: >
-        SELECT count(*) AS cnt
-        FROM pipeline_runs
-        WHERE error_text LIKE '%OOM%'
-        AND started_at >= now() - interval '7 days'
-      condition: "cnt >= 2"
-      template: "Investigate OOM pattern — {cnt} kills this week"
-      priority: critical
+  - id: oom_pattern
+    query: 'SELECT count(*) AS cnt FROM pipeline_runs WHERE error_text LIKE ''%OOM%''
+      AND started_at >= now() - interval ''7 days''
 
-    - id: census_missed
-      query: >
-        SELECT count(*) AS cnt FROM pipeline_runs
-        WHERE job_name = 'daily-census' AND status = 'failed'
-        AND started_at >= now() - interval '24 hours'
-      condition: "cnt >= 1"
-      template: "Census failed {cnt}x in last 24h — snapshot gap"
-      priority: critical
+      '
+    condition: cnt >= 2
+    template: Investigate OOM pattern — {cnt} kills this week
+    priority: critical
+  - id: census_missed
+    query: 'SELECT count(*) AS cnt FROM pipeline_runs WHERE job_name = ''daily-census''
+      AND status = ''failed'' AND started_at >= now() - interval ''24 hours''
 
-    - id: queue_low
-      query: >
-        SELECT count(*) AS cnt FROM subscription_queue
-        WHERE status IN ('pending', 'candidate')
-      condition: "cnt < 50"
-      template: "Queue running dry ({cnt} remaining). Feed next CSV batch."
-      priority: high
+      '
+    condition: cnt >= 1
+    template: Census failed {cnt}x in last 24h — snapshot gap
+    priority: critical
+  - id: queue_low
+    query: 'SELECT count(*) AS cnt FROM subscription_queue WHERE status IN (''pending'',
+      ''candidate'')
 
-    - id: crawler_cold
-      query: >
-        SELECT count(*) AS cnt FROM email_subscriptions
-        WHERE status = 'subscribed'
-        AND created_at >= now() - interval '7 days'
-      condition: "cnt < 5"
-      template: "Only {cnt} new signups this week. Check daemon + queue."
-      priority: high
+      '
+    condition: cnt < 50
+    template: Queue running dry ({cnt} remaining). Feed next CSV batch.
+    priority: high
+  - id: crawler_cold
+    query: 'SELECT count(*) AS cnt FROM email_subscriptions WHERE status = ''subscribed''
+      AND created_at >= now() - interval ''7 days''
 
-    - id: rss_stale
-      query: >
-        SELECT count(*) AS cnt FROM pipeline_runs
-        WHERE job_name = 'rss-pulse' AND status = 'completed'
-        AND started_at >= now() - interval '48 hours'
-      condition: "cnt == 0"
-      template: "RSS pulse hasn't completed in 48h. Health pills are stale."
-      priority: high
+      '
+    condition: cnt < 5
+    template: Only {cnt} new signups this week. Check daemon + queue.
+    priority: high
+  - id: rss_stale
+    query: 'SELECT count(*) AS cnt FROM pipeline_runs WHERE job_name = ''rss-pulse''
+      AND status = ''completed'' AND started_at >= now() - interval ''48 hours''
 
-
-  # -----------------------------------------------------------------------
-  # SPONSOR INTELLIGENCE — daily RSS deep scan for ICP 3
-  # Runs after rss-pulse (20:30 Denver, ~90 min) completes.
+      '
+    condition: cnt == 0
+    template: RSS pulse hasn't completed in 48h. Health pills are stale.
+    priority: high

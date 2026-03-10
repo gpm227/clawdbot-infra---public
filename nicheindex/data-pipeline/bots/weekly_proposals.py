@@ -191,13 +191,21 @@ def write_directives(write_conn, proposals: list[dict]):
     for p in proposals:
         cur.execute("""
             INSERT INTO bot_directives (source, action, priority, status, context)
-            VALUES (%s, %s, %s, %s, %s)
+            SELECT %s, %s, %s, %s, %s
+            WHERE NOT EXISTS (
+                SELECT 1 FROM bot_directives
+                WHERE source = 'weekly-proposals'
+                AND action = %s
+                AND status NOT IN ('completed', 'rejected')
+                AND created_at >= now() - interval '7 days'
+            )
         """, (
             "weekly-proposals",
             p["message"],
             p["priority"],
             "proposed",
             f"rule: {p['rule_id']}",
+            p["message"],
         ))
     write_conn.commit()
     cur.close()

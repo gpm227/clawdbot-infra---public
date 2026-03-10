@@ -13,8 +13,9 @@ Environment variables:
 
 import os
 import sys
+import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import psycopg2
 import psycopg2.extras
@@ -56,6 +57,89 @@ def get_db():
         print("ERROR: DATABASE_URL must be set.", file=sys.stderr)
         sys.exit(1)
     return psycopg2.connect(dsn)
+
+
+# ---------------------------------------------------------------------------
+# Alert format helpers
+# ---------------------------------------------------------------------------
+
+SEVERITY_EMOJI = {"red": "🔴", "yellow": "🟡"}
+
+ACTION_NEEDED = {
+    "stuck_job":       "YES — restart or investigate OOM",
+    "failed_job":      "YES — check error, trigger retry if cleared",
+    "missing_job":     "NO — will retry on next schedule",
+    "duplicate_job":   "NO — informational",
+    "runtime_anomaly": "NO — monitor next run",
+    "outside_window":  "NO — schedule drift, check cron",
+    "unknown_job":     "NO — add to jobs.yaml registry",
+    "low_queue_depth": "NO — signup daemon backlogged",
+}
+
+DISCORD_HINT = {
+    "stuck_job":       "Needs restart",
+    "failed_job":      "Check error, trigger retry",
+    "missing_job":     "Will auto-retry",
+    "duplicate_job":   "Informational only",
+    "runtime_anomaly": "Monitor next run",
+    "outside_window":  "Schedule drift",
+    "unknown_job":     "Add to job registry",
+    "low_queue_depth": "Signup daemon backlogged",
+}
+
+
+def _fmt_time(dt: Optional[datetime.datetime]) -> str:
+    """Format a datetime as 'Mar 9, 6:10am' in Denver time. Returns 'never' if None."""
+    if dt is None:
+        return "never"
+    # MST = UTC-7, MDT = UTC-6. Use fixed MST offset (close enough for ops).
+    denver_offset = datetime.timezone(datetime.timedelta(hours=-7))
+    dt_local = dt.astimezone(denver_offset)
+    return dt_local.strftime("%b %-d, %-I:%M%p").lower()
+
+
+def get_last_success(conn, job_name: Optional[str]) -> Optional[datetime.datetime]:
+    """Return the most recent completed_at for a job, or None."""
+    if not job_name:
+        return None
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT completed_at FROM pipeline_runs
+        WHERE job_name = %s AND status = 'completed'
+        ORDER BY completed_at DESC LIMIT 1
+    """, (job_name,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def format_discord_message(alert: dict, last_ok: str) -> str:
+    """Build a short ≤4-line Discord message for an alert."""
+    emoji = SEVERITY_EMOJI.get(alert["severity"], "⚠️")
+    job = alert.get("job_name") or "pipeline"
+    alert_type = alert["alert_type"]
+    msg = (alert.get("message") or "")[:80]
+    hint = DISCORD_HINT.get(alert_type, "Review manually")
+    return f"{emoji} **{job}** — {alert_type}\n{msg}\nLast OK: {last_ok}\n→ {hint}"
+
+
+def format_email_subject(alert: dict) -> str:
+    sev = alert["severity"].upper()
+    job = alert.get("job_name") or "pipeline"
+    return f"[{sev}] {job} — {alert['alert_type']}"
+
+
+def format_email_body(alert: dict, last_ok: str) -> str:
+    """Build a ≤5-line plain-text email body."""
+    job = alert.get("job_name") or "pipeline"
+    alert_type = alert["alert_type"]
+    msg = (alert.get("message") or "")[:80]
+    action = ACTION_NEEDED.get(alert_type, "Review manually")
+    return (
+        f"{job} | {alert_type}\n"
+        f"{msg}\n"
+        f"Last success: {last_ok}\n"
+        f"Action needed: {action}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -108,11 +192,11 @@ def run_resolutions(conn, job_registry: dict):
 
 
 # ---------------------------------------------------------------------------
-# Detection (step 2) — run all 7 detectors
+# Detection (step 2) — run all detectors
 # ---------------------------------------------------------------------------
-def run_all_detectors(conn, job_registry: dict) -> list[dict[str, Any]]:
+def run_all_detectors(conn, job_registry: dict) -> list:
     """Execute all detector queries and return a list of alerts."""
-    alerts: list[dict[str, Any]] = []
+    alerts = []
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     registered_names = list(job_registry.keys())
 
@@ -162,7 +246,7 @@ def run_all_detectors(conn, job_registry: dict) -> list[dict[str, Any]]:
         """, (job_name, severity, job_name, job_name, lookback, job_name))
         alerts.extend(cur.fetchall())
 
-        # 5. Outside window (only for jobs with windows)
+        # 4. Outside window (only for jobs with windows)
         window = config.get("window")
         if window:
             cur.execute("""
@@ -178,7 +262,7 @@ def run_all_detectors(conn, job_registry: dict) -> list[dict[str, Any]]:
             """, (job_name, job_name, window[0], window[1], job_name, lookback, window[0], window[1]))
             alerts.extend(cur.fetchall())
 
-        # 6. Runtime anomaly (3x median)
+        # 5. Runtime anomaly (3x median)
         cur.execute("""
             SELECT 'runtime_anomaly' AS alert_type, %s AS job_name, 'yellow' AS severity,
                    format('%%s took %%ss — %%sx the median baseline.',
@@ -202,10 +286,7 @@ def run_all_detectors(conn, job_registry: dict) -> list[dict[str, Any]]:
         """, (job_name, job_name, job_name, job_name))
         alerts.extend(cur.fetchall())
 
-        # 7. Stuck running job — checkpoint-aware
-        #    If last_checkpoint_at exists and is >30min old → stuck (no progress)
-        #    If last_checkpoint_at is NULL and running >2h → stuck (old-style)
-        #    If last_checkpoint_at is recent → busy, skip
+        # 6. Stuck running job
         cur.execute("""
             SELECT 'stuck_job' AS alert_type, %s AS job_name, 'red' AS severity,
                    format('%%s has been running for %%s hours with no checkpoint progress for %%s min.',
@@ -226,7 +307,7 @@ def run_all_detectors(conn, job_registry: dict) -> list[dict[str, Any]]:
         """, (job_name, job_name, job_name))
         alerts.extend(cur.fetchall())
 
-    # 4. Unknown job names (runs once, not per-job)
+    # 7. Unknown job names (once, not per-job)
     cur.execute("""
         SELECT DISTINCT 'unknown_job' AS alert_type, p.job_name, 'yellow' AS severity,
                format('Unregistered job ''%%s'' appeared in pipeline_runs.', p.job_name) AS message
@@ -236,28 +317,13 @@ def run_all_detectors(conn, job_registry: dict) -> list[dict[str, Any]]:
     """, (registered_names,))
     alerts.extend(cur.fetchall())
 
-    # 8. Queue depth — subscription_queue low on pending+candidate
-    cur.execute("""
-        SELECT 'low_queue_depth' AS alert_type, NULL AS job_name, 'yellow' AS severity,
-               format('Subscription queue low: %%s pending + %%s candidates = %%s total (threshold: 500).',
-                      pending, candidates, pending + candidates) AS message
-        FROM (
-            SELECT
-                count(*) FILTER (WHERE status = 'pending') AS pending,
-                count(*) FILTER (WHERE status = 'candidate') AS candidates
-            FROM subscription_queue
-        ) q
-        WHERE q.pending + q.candidates < 500
-    """)
-    alerts.extend(cur.fetchall())
-
     return [dict(a) for a in alerts]
 
 
 # ---------------------------------------------------------------------------
 # Dedup insert (step 3)
 # ---------------------------------------------------------------------------
-def dedup_insert_alert(conn, alert: dict[str, Any]) -> bool:
+def dedup_insert_alert(conn, alert: dict) -> bool:
     """Insert alert if no matching open alert exists. Return True if inserted."""
     cur = conn.cursor()
     cur.execute("""
@@ -278,10 +344,10 @@ def dedup_insert_alert(conn, alert: dict[str, Any]) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Discord notification (step 4a — primary, all alerts)
+# Discord notification
 # ---------------------------------------------------------------------------
-def send_discord_alert(alert: dict[str, Any]):
-    """Post alert to Discord via webhook. Primary notification channel."""
+def send_discord_alert(alert: dict, last_ok: str):
+    """Post alert to Discord via webhook."""
     import urllib.request
     import json as _json
 
@@ -290,32 +356,55 @@ def send_discord_alert(alert: dict[str, Any]):
         print("WARNING: DISCORD_WEBHOOK_URL not set. Skipping Discord.", file=sys.stderr)
         return
 
-    severity = alert["severity"].upper()
-    color = 0xEF4444 if severity == "RED" else 0xF59E0B  # red / amber
-    job = alert.get("job_name") or "unknown"
+    severity = alert["severity"]
+    color = 0xEF4444 if severity == "red" else 0xF59E0B
+
+    content = format_discord_message(alert, last_ok)
 
     payload = {
         "embeds": [{
-            "title": f"[{severity}] {alert['alert_type']} — {job}",
-            "description": alert.get("message", ""),
+            "description": content,
             "color": color,
         }]
     }
     try:
         data = _json.dumps(payload).encode()
-        req = urllib.request.Request(webhook_url, data=data,
-                                     headers={"Content-Type": "application/json",
-                                              "User-Agent": "NicheIndex-Watchdog/1.0"})
+        req = urllib.request.Request(
+            webhook_url, data=data,
+            headers={"Content-Type": "application/json",
+                     "User-Agent": "NicheIndex-Watchdog/1.0"}
+        )
         urllib.request.urlopen(req, timeout=10)
     except Exception as exc:
         print(f"WARNING: Discord webhook failed: {exc}", file=sys.stderr)
 
 
+def send_discord_raw(text: str):
+    """Send a raw one-line Discord message (for remediation confirmations)."""
+    import urllib.request
+    import json as _json
+
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+    if not webhook_url:
+        return
+    payload = {"content": text}
+    try:
+        data = _json.dumps(payload).encode()
+        req = urllib.request.Request(
+            webhook_url, data=data,
+            headers={"Content-Type": "application/json",
+                     "User-Agent": "NicheIndex-Watchdog/1.0"}
+        )
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as exc:
+        print(f"WARNING: Discord raw post failed: {exc}", file=sys.stderr)
+
+
 # ---------------------------------------------------------------------------
-# Email escalation (step 4b — RED only, backup)
+# Email escalation (RED only)
 # ---------------------------------------------------------------------------
-def send_email_alert(alert: dict[str, Any]):
-    """Send RED alert via Resend (backup escalation)."""
+def send_email_alert(alert: dict, last_ok: str):
+    """Send RED alert via Resend."""
     try:
         import resend
     except ImportError:
@@ -328,8 +417,9 @@ def send_email_alert(alert: dict[str, Any]):
         print("WARNING: RESEND_API_KEY or WATCHDOG_EMAIL_TO not set.", file=sys.stderr)
         return
 
-    subject = f"[WATCHDOG RED] {alert.get('job_name', 'unknown')} – {alert['alert_type']}"
-    html = f"<p><strong>{alert['alert_type']}</strong>: {alert.get('message', '')}</p>"
+    subject = format_email_subject(alert)
+    body = format_email_body(alert, last_ok)
+    html = "<pre style='font-family:monospace;font-size:14px;line-height:1.6'>" + body + "</pre>"
 
     resend.Emails.send({
         "from": "NicheIndex Watchdog <alerts@nicheindex.co>",
@@ -340,9 +430,9 @@ def send_email_alert(alert: dict[str, Any]):
 
 
 # ---------------------------------------------------------------------------
-# Auto-remediation (step 5) — fix stuck jobs automatically
+# Auto-remediation (step 5)
 # ---------------------------------------------------------------------------
-def auto_remediate_stuck(conn, alert: dict[str, Any]):
+def auto_remediate_stuck(conn, alert: dict):
     """Mark a stuck job as failed so the next scheduled run can retry."""
     run_id = alert.get("run_id")
     if not run_id:
@@ -357,7 +447,10 @@ def auto_remediate_stuck(conn, alert: dict[str, Any]):
     """, (run_id,))
     conn.commit()
     if cur.rowcount > 0:
-        print(f"  Auto-remediated stuck run {run_id} for {alert.get('job_name')}")
+        job = alert.get("job_name", "unknown")
+        msg = f"✅ Auto-fixed: {job} — killed stuck run, will retry"
+        print(f"  {msg}")
+        send_discord_raw(msg)
 
 
 def log_bot_interaction(conn, bot_name: str, interaction_type: str,
@@ -393,7 +486,7 @@ def run_watchdog():
     # Step 2: detect anomalies
     alerts = run_all_detectors(conn, job_registry)
 
-    # Step 3: dedup insert + collect newly-inserted alerts by severity
+    # Step 3: dedup insert + collect newly-inserted alerts
     new_alerts = []
     new_red = []
     for alert in alerts:
@@ -403,15 +496,14 @@ def run_watchdog():
             if alert["severity"] == "red":
                 new_red.append(alert)
 
-    # Step 4a: Discord for all new alerts (primary)
+    # Step 4: notify — Discord for all new alerts, email for RED only
     for alert in new_alerts:
-        send_discord_alert(alert)
+        last_ok = _fmt_time(get_last_success(conn, alert.get("job_name")))
+        send_discord_alert(alert, last_ok)
+        if alert["severity"] == "red":
+            send_email_alert(alert, last_ok)
 
-    # Step 4b: email for RED only (backup escalation)
-    for alert in new_red:
-        send_email_alert(alert)
-
-    # Step 5: Auto-remediate stuck jobs
+    # Step 5: auto-remediate stuck jobs
     for alert in new_alerts:
         if alert["alert_type"] == "stuck_job":
             auto_remediate_stuck(conn, alert)
@@ -429,7 +521,7 @@ def run_watchdog():
                 outcome={"action": "marked_failed", "run_id": str(alert.get("run_id", ""))},
             )
 
-    # Log all non-stuck alerts as observations (training data)
+    # Log non-stuck alerts as observations
     for alert in new_alerts:
         if alert["alert_type"] != "stuck_job":
             log_bot_interaction(
@@ -444,7 +536,6 @@ def run_watchdog():
                 },
             )
 
-    # Summary
     open_count_cur = conn.cursor()
     open_count_cur.execute("SELECT count(*) FROM bot_alerts WHERE resolved = false")
     open_count = open_count_cur.fetchone()[0]
